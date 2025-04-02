@@ -1,0 +1,64 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RootNamespace>CurveMaster</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Version>0.0.1</Version>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Release</Configuration>
+    <PublishSingleFile>true</PublishSingleFile>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="include\ZenStates-Core\External\WinRing0\WinRing0.sys">
+        <LogicalName>ZenStates.Core.WinRing0.sys</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="include\ZenStates-Core\External\WinRing0\WinRing0x64.sys">
+        <LogicalName>ZenStates.Core.WinRing0x64.sys</LogicalName>
+    </EmbeddedResource>
+</ItemGroup>
+
+
+  <ItemGroup>
+    <PackageReference Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
+    <PackageReference Include="System.Management" Version="6.0.0" />
+    <!-- Included for the ZenStates-Core submodule...-->
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="6.0.0" />
+    <PackageReference Include="System.IO.FileSystem.AccessControl" Version="5.0.0" />
+    <PackageReference Include="System.Threading.AccessControl" Version="6.0.0" />
+  </ItemGroup>
+  <Target Name="PostBuild" AfterTargets="AfterBuild">
+    <PropertyGroup>
+        <IsWindows Condition="'$(OS)' == 'Windows_NT'">true</IsWindows>
+    </PropertyGroup>
+
+    <Exec Condition="'$(IsWindows)' == 'true'"
+          Command="xcopy /s /d /y &quot;$(ProjectDir)include\ZenStates-Core\External\InpOut\x64\inpoutx64.dll&quot; &quot;$(OutDir)&quot; &amp;&amp;
+                   xcopy /s /d /y &quot;$(ProjectDir)include\ZenStates-Core\External\WinIo\WinIo32.dll&quot; &quot;$(OutDir)&quot; &amp;&amp;
+                   xcopy /s /d /y &quot;$(ProjectDir)include\ZenStates-Core\External\WinIo\WinIo32.sys&quot; &quot;$(OutDir)&quot; &amp;&amp;
+                   copy &quot;$(ProjectDir)include\ZenStates-Core\External\InpOut\license.txt&quot; &quot;$(OutDir)InpOut.LICENSE.txt&quot; &amp;&amp;
+                   copy &quot;$(ProjectDir)include\ZenStates-Core\External\WinIo\LICENSE.txt&quot; &quot;$(OutDir)WinIo32.LICENSE.txt&quot; &amp;&amp;
+                   copy &quot;$(ProjectDir)include\ZenStates-Core\External\WinRing0\LICENSE.txt&quot; &quot;$(OutDir)WinRing0.LICENSE.txt&quot;" />
+
+    <Exec Condition="'$(IsWindows)' != 'true'"
+          Command="cp -u &quot;$(ProjectDir)include/ZenStates-Core/External/InpOut/x64/inpoutx64.dll&quot; &quot;$(ProjectDir)$(OutDir)&quot; &amp;&amp; 
+                   cp -u &quot;$(ProjectDir)include/ZenStates-Core/External/WinIo/WinIo32.dll&quot; &quot;$(ProjectDir)$(OutDir)&quot; &amp;&amp; 
+                   cp -u &quot;$(ProjectDir)include/ZenStates-Core/External/WinIo/WinIo32.sys&quot; &quot;$(ProjectDir)$(OutDir)&quot; &amp;&amp; 
+                   cp &quot;$(ProjectDir)include/ZenStates-Core/External/InpOut/license.txt&quot; &quot;$(ProjectDir)$(OutDir)/InpOut.LICENSE.txt&quot; &amp;&amp; 
+                   cp &quot;$(ProjectDir)include/ZenStates-Core/External/WinIo/LICENSE.txt&quot; &quot;$(ProjectDir)$(OutDir)/WinIo32.LICENSE.txt&quot; &amp;&amp; 
+                   cp &quot;$(ProjectDir)include/ZenStates-Core/External/WinRing0/LICENSE.txt&quot; &quot;$(ProjectDir)$(OutDir)/WinRing0.LICENSE.txt&quot;" />
+  </Target>
+
+</Project>
