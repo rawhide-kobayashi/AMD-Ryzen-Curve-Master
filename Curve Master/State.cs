@@ -12,7 +12,7 @@ namespace CurveMaster
     {
         public string CurrentStep = "init";
         public List<int> CurveOptimizerOffsets = [];
-        public bool LastShutdownWasClean = false;
+        public bool LastShutdownWasClean = true;
         public static readonly string StateFilePath = "state.json";
 
         // Basic statistics to gauge real improvements
@@ -43,6 +43,10 @@ namespace CurveMaster
         public CurveShaperValue MaxF_LowT = new("Setup Question	= Max Frequency - Low Temperature Magnitude", 0);
         public CurveShaperValue MaxF_MedT = new("Setup Question	= Max Frequency - Med Temperature Magnitude", 0);
         public CurveShaperValue MaxF_HiT = new("Setup Question	= Max Frequency - High Temperature Magnitude", 0);
+
+        public int LastCoreTested1T;
+        public bool LastRebootChangedCS = false;
+        public bool LoweringValue = true;
         
 
         public void SaveState()

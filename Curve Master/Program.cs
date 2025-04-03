@@ -1,4 +1,5 @@
-﻿using System.Diagnostics;
+﻿using System.CodeDom;
+using System.Diagnostics;
 using System.Security.Principal;
 using CurveMaster.include.HWiNFO;
 using CurveMaster.include.RyzenUtil;
@@ -71,9 +72,18 @@ namespace CurveMaster
             CreateNoWindow = true
         };
 
+        private static readonly ProcessStartInfo RebootCMDInfo = new()
+        {
+            FileName = "shutdown",
+            Arguments = "/r /t 0",
+            CreateNoWindow = true,
+            UseShellExecute = false
+        };
+
         private static readonly Process ycruncher = new() {StartInfo = ycruncherInfo};
         private static readonly Process SCEWinRead = new() {StartInfo = SCEWinReadInfo};
         private static readonly Process SCEWinWrite = new() {StartInfo = SCEWinWriteInfo};
+        private static readonly Process RebootCMD = new() {StartInfo = RebootCMDInfo};
 
         private static OCProcessState State = OCProcessState.LoadState();
 
@@ -95,6 +105,12 @@ namespace CurveMaster
                     case "vid_sync":
                         Console.WriteLine("Step 1: Synchronizing core VIDs under y-cruncher BKT...");
                         SynchronizeVIDs();
+                        State.CurrentStep = "single_core_test_campaign";
+                        break;
+
+                    case "single_core_test_campaign":
+                        Console.WriteLine("Step 2: Lowering Max Freq - Med Temp Curve Shaper and testing 1T stability...");
+                        SingleCoreTesting();
                         break;
                 }
             }
@@ -161,6 +177,111 @@ namespace CurveMaster
             }
 
             Console.WriteLine("SCEWIN successfully wrote EFI vars.");
+        }
+
+        private static void ApplyCS(CurveShaperValue CSVal)
+        {
+            List<string> Lines = File.ReadAllLines("SCEWIN\\nvram.txt").ToList();
+            int StartIndex = Lines.FindIndex(x => x.Equals(CSVal.SetupQuestion));
+            Lines[StartIndex + 6] = $"Value	=<{CSVal.Value}>";
+            File.WriteAllLines("SCEWIN\\nvram.txt", Lines);
+        }
+
+        private static int MinutesToMilliseconds(double Minutes)
+        {
+            return (int)(Minutes * 60 * 1000);
+        }
+
+        private static void SingleCoreTesting()
+        {
+            // This should run on the first run of this function
+            if (!State.LastRebootChangedCS && State.LastShutdownWasClean && State.MaxF_MedT.Value == 0)
+            {
+                // Lower curve shaper setting for initial testing and reboot
+                State.MaxF_MedT.Value -= 5;
+                ApplyCS(State.MaxF_MedT);
+                State.LastRebootChangedCS = true;
+                State.LastShutdownWasClean = true;
+                State.SaveState();
+                RebootCMD.Start();
+            }
+
+            // This should run if the system had a hard crash during the last testing run
+            else if (!State.LastRebootChangedCS && !State.LastShutdownWasClean)
+            {
+                // Raise curve shaper and reboot
+                State.LoweringValue = false;
+                State.MaxF_MedT.Value += 1;
+                ApplyCS(State.MaxF_MedT);
+                State.LastRebootChangedCS = true;
+                State.LastShutdownWasClean = true;
+                State.SaveState();
+                RebootCMD.Start();
+            }
+
+            // This should run after a clean value change
+            else if (State.LastRebootChangedCS && State.LastShutdownWasClean)
+            {
+                // Run single threaded testing
+                State.LastShutdownWasClean = false;
+
+                if (State.LoweringValue)
+                {
+                    for (int i = 0; i < State.CurveOptimizerOffsets.Count; i++)
+                    {
+                        State.LastCoreTested1T = i;
+                        StartYcruncher("BKT", $"{i * 2}-{(i * 2) + 1}");
+                        Thread.Sleep(MinutesToMilliseconds(5));
+                        // God I don't want to interpret STDOUT. If MHz is high, we did not crash!
+                        if (HWiNFOEZ.GetAvgSensorOverPeriod(SensorIndexes[i]["MHz"], 5000) > 4000) ycruncher.Kill(true);
+
+                        else
+                        {
+                            // Raise curve shaper and reboot
+                            State.LoweringValue = false;
+                            State.MaxF_MedT.Value += 1;
+                            ApplyCS(State.MaxF_MedT);
+                            State.LastRebootChangedCS = true;
+                            State.LastShutdownWasClean = true;
+                            State.SaveState();
+                            RebootCMD.Start();
+                        }
+                    }
+                }
+
+                else
+                {
+                    // Assuming that the first core to crash is the worst, when raising the curve, test the last-tested core first...
+                    StartYcruncher("BKT", $"{State.LastCoreTested1T * 2}-{(State.LastCoreTested1T * 2) + 1}");
+                    Thread.Sleep(MinutesToMilliseconds(5));
+                    if (HWiNFOEZ.GetAvgSensorOverPeriod(SensorIndexes[State.LastCoreTested1T]["MHz"], 5000) > 4000)
+                    ycruncher.Kill(true);
+
+                    // ...then return to doing a full battery, this time for much, much longer, just to make sure...
+                    for (int x = 0; x < 10; x++)
+                    {
+                        for (int i = 0; i < State.CurveOptimizerOffsets.Count; i++)
+                        {
+                            State.LastCoreTested1T = i;
+                            StartYcruncher("BKT", $"{i * 2}-{(i * 2) + 1}");
+                            Thread.Sleep(MinutesToMilliseconds(10));
+                            if (HWiNFOEZ.GetAvgSensorOverPeriod(SensorIndexes[i]["MHz"], 5000) > 4000) ycruncher.Kill(true);
+
+                            else
+                            {
+                                // Raise curve shaper and reboot
+                                State.LoweringValue = false;
+                                State.MaxF_MedT.Value += 1;
+                                ApplyCS(State.MaxF_MedT);
+                                State.LastRebootChangedCS = true;
+                                State.LastShutdownWasClean = true;
+                                State.SaveState();
+                                RebootCMD.Start();
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         private static void ZeroCurveShaperValues()
@@ -244,12 +365,15 @@ namespace CurveMaster
 
             Console.WriteLine("VIDs synchronized, gathering initial clock speed data...");
             RyzenEZ.ZeroPBOOffsets();
-            State.StockBBPClockAvg = HWiNFOEZ.GetAvgSensorOverPeriod(AvgEffectiveClock, 10000);
-            State.StockBBPPPTAvg = HWiNFOEZ.GetAvgSensorOverPeriod(PPTIndex, 10000);
             StartYcruncher("BKT", ycruncherCoreAffinity);
             State.StockBKTClockAvg = HWiNFOEZ.GetAvgSensorOverPeriod(AvgEffectiveClock, 10000);
             State.StockBKTPPTAvg = HWiNFOEZ.GetAvgSensorOverPeriod(PPTIndex, 10000);
             ycruncher.Kill(true);
+            StartYcruncher("BBP", ycruncherCoreAffinity);
+            State.StockBBPClockAvg = HWiNFOEZ.GetAvgSensorOverPeriod(AvgEffectiveClock, 10000);
+            State.StockBBPPPTAvg = HWiNFOEZ.GetAvgSensorOverPeriod(PPTIndex, 10000);
+            ycruncher.Kill(true);
+            
             for (int i = 0; i < SensorIndexes.Count; i++) RyzenEZ.ApplyPBOOffset($"{i}:{State.CurveOptimizerOffsets[i]}");
         }
 
