@@ -65,18 +65,18 @@ namespace CurveMaster.include.RyzenUtil
                             // Support for threadrippers/epyc is theoretically available, if the calculations were expanded, but are untested
                             try
                             {
-                                int mapIndex = mappedCores[i] < 8 ? 0 : 1;
-
                                 if (arg[i].Contains(':'))
                                 {
                                     int core = Convert.ToInt32(arg[i].Split(':')[0]);
                                     int offset = Convert.ToInt32(arg[i].Split(':')[1]);
+                                    int mapIndex = mappedCores[core] < 8 ? 0 : 1;
                                     ryzen.SetPsmMarginSingleCore((uint)(((mapIndex << 8) | mappedCores[core] % 8 & 0xF) << 20), offset);
                                     Console.WriteLine($"Set logical core {core}, physical core {mappedCores[core]} offset to {offset}!");
                                 }
 
                                 else
                                 {
+                                    int mapIndex = mappedCores[i] < 8 ? 0 : 1;
                                     ryzen.SetPsmMarginSingleCore((uint)(((mapIndex << 8) | mappedCores[i] % 8 & 0xF) << 20), Convert.ToInt32(arg[i]));
                                     Console.WriteLine($"Set logical core {i}, physical core {mappedCores[i]} offset to {arg[i]}!");
                                 }

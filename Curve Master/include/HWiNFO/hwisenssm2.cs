@@ -1,3 +1,8 @@
+// I have no idea what these mean or how to fix them, and it works as it is, so... Get outta my sight!!!
+#pragma warning disable CS8605 // Unboxing a possibly null value.
+#pragma warning disable CS8602 // Dereference of a possibly null reference.
+#pragma warning disable CS8618 // Non-nullable field 'mmf' must contain a non-null value when exiting constructor.
+
 using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;

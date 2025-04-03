@@ -32,6 +32,7 @@
 
 
   <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
     <PackageReference Include="System.Management" Version="6.0.0" />
     <!-- Included for the ZenStates-Core submodule...-->
@@ -44,21 +45,9 @@
         <IsWindows Condition="'$(OS)' == 'Windows_NT'">true</IsWindows>
     </PropertyGroup>
 
-    <Exec Condition="'$(IsWindows)' == 'true'"
-          Command="xcopy /s /d /y &quot;$(ProjectDir)include\ZenStates-Core\External\InpOut\x64\inpoutx64.dll&quot; &quot;$(OutDir)&quot; &amp;&amp;
-                   xcopy /s /d /y &quot;$(ProjectDir)include\ZenStates-Core\External\WinIo\WinIo32.dll&quot; &quot;$(OutDir)&quot; &amp;&amp;
-                   xcopy /s /d /y &quot;$(ProjectDir)include\ZenStates-Core\External\WinIo\WinIo32.sys&quot; &quot;$(OutDir)&quot; &amp;&amp;
-                   copy &quot;$(ProjectDir)include\ZenStates-Core\External\InpOut\license.txt&quot; &quot;$(OutDir)InpOut.LICENSE.txt&quot; &amp;&amp;
-                   copy &quot;$(ProjectDir)include\ZenStates-Core\External\WinIo\LICENSE.txt&quot; &quot;$(OutDir)WinIo32.LICENSE.txt&quot; &amp;&amp;
-                   copy &quot;$(ProjectDir)include\ZenStates-Core\External\WinRing0\LICENSE.txt&quot; &quot;$(OutDir)WinRing0.LICENSE.txt&quot;" />
+    <Exec Condition="'$(IsWindows)' == 'true'" Command="xcopy /s /d /y &quot;$(ProjectDir)include\ZenStates-Core\External\InpOut\x64\inpoutx64.dll&quot; &quot;$(OutDir)&quot; &amp;&amp;&#xD;&#xA;                   xcopy /s /d /y &quot;$(ProjectDir)include\ZenStates-Core\External\WinIo\WinIo32.dll&quot; &quot;$(OutDir)&quot; &amp;&amp;&#xD;&#xA;                   xcopy /s /d /y &quot;$(ProjectDir)include\ZenStates-Core\External\WinIo\WinIo32.sys&quot; &quot;$(OutDir)&quot; &amp;&amp;&#xD;&#xA;                   copy &quot;$(ProjectDir)include\ZenStates-Core\External\InpOut\license.txt&quot; &quot;$(OutDir)InpOut.LICENSE.txt&quot; &amp;&amp;&#xD;&#xA;                   copy &quot;$(ProjectDir)include\ZenStates-Core\External\WinIo\LICENSE.txt&quot; &quot;$(OutDir)WinIo32.LICENSE.txt&quot; &amp;&amp;&#xD;&#xA;                   copy &quot;$(ProjectDir)include\ZenStates-Core\External\WinRing0\LICENSE.txt&quot; &quot;$(OutDir)WinRing0.LICENSE.txt&quot; &amp;&amp;&#xD;&#xA;                   xcopy /s /d /y &quot;$(ProjectDir)include\y-cruncher&quot; &quot;$(OutDir)\y-cruncher\&quot;" />
 
-    <Exec Condition="'$(IsWindows)' != 'true'"
-          Command="cp -u &quot;$(ProjectDir)include/ZenStates-Core/External/InpOut/x64/inpoutx64.dll&quot; &quot;$(ProjectDir)$(OutDir)&quot; &amp;&amp; 
-                   cp -u &quot;$(ProjectDir)include/ZenStates-Core/External/WinIo/WinIo32.dll&quot; &quot;$(ProjectDir)$(OutDir)&quot; &amp;&amp; 
-                   cp -u &quot;$(ProjectDir)include/ZenStates-Core/External/WinIo/WinIo32.sys&quot; &quot;$(ProjectDir)$(OutDir)&quot; &amp;&amp; 
-                   cp &quot;$(ProjectDir)include/ZenStates-Core/External/InpOut/license.txt&quot; &quot;$(ProjectDir)$(OutDir)/InpOut.LICENSE.txt&quot; &amp;&amp; 
-                   cp &quot;$(ProjectDir)include/ZenStates-Core/External/WinIo/LICENSE.txt&quot; &quot;$(ProjectDir)$(OutDir)/WinIo32.LICENSE.txt&quot; &amp;&amp; 
-                   cp &quot;$(ProjectDir)include/ZenStates-Core/External/WinRing0/LICENSE.txt&quot; &quot;$(ProjectDir)$(OutDir)/WinRing0.LICENSE.txt&quot;" />
+    <Exec Condition="'$(IsWindows)' != 'true'" Command="cp -u &quot;$(ProjectDir)include/ZenStates-Core/External/InpOut/x64/inpoutx64.dll&quot; &quot;$(ProjectDir)$(OutDir)&quot; &amp;&amp; &#xD;&#xA;                   cp -u &quot;$(ProjectDir)include/ZenStates-Core/External/WinIo/WinIo32.dll&quot; &quot;$(ProjectDir)$(OutDir)&quot; &amp;&amp; &#xD;&#xA;                   cp -u &quot;$(ProjectDir)include/ZenStates-Core/External/WinIo/WinIo32.sys&quot; &quot;$(ProjectDir)$(OutDir)&quot; &amp;&amp;&#xD;&#xA;                   cp -ur &quot;$(ProjectDir)include/y-cruncher&quot; &quot;$(ProjectDir)$(OutDir)/y-cruncher&quot; &amp;&amp;&#xD;&#xA;                   cp &quot;$(ProjectDir)include/ZenStates-Core/External/InpOut/license.txt&quot; &quot;$(ProjectDir)$(OutDir)/InpOut.LICENSE.txt&quot; &amp;&amp; &#xD;&#xA;                   cp &quot;$(ProjectDir)include/ZenStates-Core/External/WinIo/LICENSE.txt&quot; &quot;$(ProjectDir)$(OutDir)/WinIo32.LICENSE.txt&quot; &amp;&amp; &#xD;&#xA;                   cp &quot;$(ProjectDir)include/ZenStates-Core/External/WinRing0/LICENSE.txt&quot; &quot;$(ProjectDir)$(OutDir)/WinRing0.LICENSE.txt&quot;" />
   </Target>
 
 </Project>

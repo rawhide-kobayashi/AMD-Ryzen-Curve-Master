@@ -1,7 +1,7 @@
 ﻿using System.Diagnostics;
+using System.Security.Principal;
 using CurveMaster.include.HWiNFO;
 using CurveMaster.include.RyzenUtil;
-
 
 namespace CurveMaster
 {
@@ -13,6 +13,14 @@ namespace CurveMaster
 
         static Program()
         {
+            if (!IsAdministrator())
+            {
+                Console.WriteLine("This application must be run as an administrator.");
+                Console.WriteLine("Press any key to exit...");
+                Console.ReadKey();
+                Environment.Exit(1);
+            }
+
             (SensorIndexes, PPTIndex, AvgEffectiveClock) = HWiNFOEZ.GetSensorIndexes();
         }
 
@@ -26,8 +34,7 @@ namespace CurveMaster
             UseShellExecute = false,
             CreateNoWindow = true
         };
-
-        private static readonly Process ycruncher = new() { StartInfo = ycruncherInfo};
+        
         private static readonly string ycruncherConfigTemplate = @"
 {{
     Action : ""StressTest""
@@ -41,24 +48,57 @@ namespace CurveMaster
         Tests : [""{1}""] 
     }}
 }}";
+
+        private static readonly ProcessStartInfo SCEWinReadInfo = new()
+        {
+            FileName = "SCEWIN\\SCEWIN_64.exe",
+            Arguments = "/o /s SCEWIN\\nvram.txt",
+            RedirectStandardInput = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        private static readonly ProcessStartInfo SCEWinWriteInfo = new()
+        {
+            FileName = "SCEWIN\\SCEWIN_64.exe",
+            Arguments = "/i /s SCEWIN\\nvram.txt",
+            RedirectStandardInput = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        private static readonly Process ycruncher = new() {StartInfo = ycruncherInfo};
+        private static readonly Process SCEWinRead = new() {StartInfo = SCEWinReadInfo};
+        private static readonly Process SCEWinWrite = new() {StartInfo = SCEWinWriteInfo};
+
+        private static OCProcessState State = OCProcessState.LoadState();
+
+        private static bool ReadyToReboot = false;
+
         static int Main()
         {
-            Console.WriteLine("Welcome to the Ryzen Curve Master!");
-            Console.WriteLine("Your computer is about to be sacrificed to the throes of automation; Bluescreens, freezes, and other crashes may occur. Corrupted EFI vars may occur. Continue at your own peril.");
-            Console.WriteLine("Please make sure that your current BIOS settings are accurate and correct, and that EFI vars are not password protected.");
-            Console.WriteLine("Press any key to continue...");
-            Console.ReadKey();
-            Console.WriteLine("Testing that SCEWIN can read/write EFI vars...");
+            while (!ReadyToReboot)
+            {
+                switch (State.CurrentStep)
+                {
+                    case "init":
+                        Console.WriteLine("Step 0: Collect system information, warn user, and verify capabilities...");
+                        Init();
+                        State.CurrentStep = "vid_sync";
+                        State.SaveState();
+                        break;
 
-            Console.WriteLine("Setting PBO offset to 0 on all cores...");
-            RyzenEZ.ZeroPBOOffsets();
+                    case "vid_sync":
+                        Console.WriteLine("Step 1: Synchronizing core VIDs under y-cruncher BKT...");
+                        SynchronizeVIDs();
+                        break;
+                }
+            }
             
-            Console.WriteLine($"Detected {SensorIndexes.Count} physical cores on your system.");
-
-            List<int> PBOOffsets = [];
-
-            Console.WriteLine("Step 1: Synchronize core VIDs under y-cruncher BKT.");
-
             ycruncher.Dispose();
             RyzenEZ.Dispose();
             HWiNFOEZ.Dispose();
@@ -66,9 +106,9 @@ namespace CurveMaster
             return 0;
         }
 
-        private static void StartYcruncher(string testType, int ycruncherThreadCount)
+        private static void StartYcruncher(string testType, string ycruncherCoreAffinity)
         {
-            File.WriteAllText("y-cruncher\\test.cfg", string.Format(ycruncherConfigTemplate, Convert.ToString(ycruncherThreadCount), testType));
+            File.WriteAllText("y-cruncher\\test.cfg", string.Format(ycruncherConfigTemplate, Convert.ToString(ycruncherCoreAffinity), testType));
             ycruncher.Start();
         }
 
@@ -83,15 +123,91 @@ namespace CurveMaster
             return HighestIndex;
         }
 
+        private static void Init()
+        {
+            Console.WriteLine("Welcome to the Ryzen Curve Master!");
+            Console.WriteLine("Your computer is about to be sacrificed to the throes of automation; Bluescreens, freezes, and other crashes may occur. Corrupted EFI vars may occur. Continue at your own peril.");
+            Console.WriteLine("Please make sure that your current BIOS settings are accurate and correct, and that EFI vars are not password protected.");
+            Console.WriteLine("Press any key to continue...");
+            Console.ReadKey();
+            Console.WriteLine("Testing that SCEWIN can read/write EFI vars...");
+            SCEWinRead.Start();
+            SCEWinRead.WaitForExit();
+            if (SCEWinRead.ExitCode != 0)
+            {
+                Console.WriteLine("SCEWIN failed to read EFI vars...");
+                Console.Write(SCEWinRead.StandardError.ReadToEnd());
+                Console.Write(SCEWinRead.StandardOutput.ReadToEnd());
+                Console.WriteLine("Press any key to exit...");
+                Console.ReadKey();
+                Environment.Exit(1);
+            }
+
+            ZeroCurveShaperValues();
+
+            Console.WriteLine("SCEWIN successfully read EFI vars, attempting write...");
+
+            SCEWinWrite.Start();
+            SCEWinWrite.WaitForExit();
+            
+            if (SCEWinWrite.ExitCode != 0)
+            {
+                Console.WriteLine("SCEWIN failed to write EFI vars...");
+                Console.Write(SCEWinWrite.StandardError.ReadToEnd());
+                Console.Write(SCEWinWrite.StandardOutput.ReadToEnd());
+                Console.WriteLine("Press any key to exit...");
+                Console.ReadKey();
+                Environment.Exit(1);
+            }
+
+            Console.WriteLine("SCEWIN successfully wrote EFI vars.");
+        }
+
+        private static void ZeroCurveShaperValues()
+        {
+
+            List<string> Lines = File.ReadAllLines("SCEWIN\\nvram.txt").ToList();
+
+            // ??? beyond silly, just let me put in a string regularly!
+            int StartIndex = Lines.FindIndex(x => x.Equals("Setup Question	= Min Frequency - Low Temperature"));
+
+            // This *should* be the same for all motherboards, since it's an AGESA option...
+            // It is for both an MSI and Asus board that I tested, anyway...
+            for (int i = 0; i < 15; i++)
+            {
+                Lines[StartIndex + (i * 24) + 5] = "Options	=[FF]Auto	// Move \"*\" to the desired Option";
+                Lines[StartIndex + (i * 24) + 6] = "         *[01]Enable";
+                Lines[StartIndex + (i * 24) + 14] = "Options	=[00]Positive	// Move \"*\" to the desired Option";
+                Lines[StartIndex + (i * 24) + 15] = "         *[01]Negative";
+            }
+
+            File.WriteAllLines("SCEWIN\\nvram.txt", Lines);
+        }
+
+        private static bool IsAdministrator()
+        {
+            using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+            {
+                WindowsPrincipal principal = new WindowsPrincipal(identity);
+                return principal.IsInRole(WindowsBuiltInRole.Administrator);
+            }
+        }
+
         private static void SynchronizeVIDs()
         {
-            int ycruncherThreadCount = (SensorIndexes.Count * 2) - 1;
+            Console.WriteLine($"Detected {SensorIndexes.Count} physical cores on your system.");
+            Console.WriteLine("Setting PBO offset to 0 on all cores...");
+            RyzenEZ.ZeroPBOOffsets();
 
-            StartYcruncher("BKT", ycruncherThreadCount);
+            Console.WriteLine("Beginning y-cruncher BKT stress test...");
+
+            string ycruncherCoreAffinity = $"0-{(SensorIndexes.Count * 2) - 1}";
+
+            StartYcruncher("BKT", ycruncherCoreAffinity);
 
             for (int i = 0; i < SensorIndexes.Count; i++)
             {
-                PBOOffsets.Add(0);
+                State.CurveOptimizerOffsets.Add(0);
             }
 
             while (true)
@@ -117,66 +233,40 @@ namespace CurveMaster
                 else
                 {
                     int HighestIndex = GetHighestVIDIndex(CoreAvgVIDs);
-                    PBOOffsets[HighestIndex] -= 1;
+                    State.CurveOptimizerOffsets[HighestIndex] -= 1;
                     Console.WriteLine($"Worst VID delta: {CoreAvgVIDs.Max() - CoreAvgVIDs.Min():F3}");
-                    RyzenEZ.ApplyPBOOffset($"{HighestIndex}:{PBOOffsets[HighestIndex]}");
+                    RyzenEZ.ApplyPBOOffset($"{HighestIndex}:{State.CurveOptimizerOffsets[HighestIndex]}");
                 }
 
                 // Give the values a chance to settle after changing...
-                Thread.Sleep(1000);
+                Thread.Sleep(2000);
             }
 
-            Console.WriteLine("Undervolting completed, gathering clock speed data...");
-
-            var NewBKTClockAvg = HWiNFOEZ.GetAvgSensorOverPeriod(AvgEffectiveClock, 10000);
-            var NewBKTPPTAvg = HWiNFOEZ.GetAvgSensorOverPeriod(PPTIndex, 10000);
-
+            Console.WriteLine("VIDs synchronized, gathering initial clock speed data...");
+            RyzenEZ.ZeroPBOOffsets();
+            State.StockBBPClockAvg = HWiNFOEZ.GetAvgSensorOverPeriod(AvgEffectiveClock, 10000);
+            State.StockBBPPPTAvg = HWiNFOEZ.GetAvgSensorOverPeriod(PPTIndex, 10000);
+            StartYcruncher("BKT", ycruncherCoreAffinity);
+            State.StockBKTClockAvg = HWiNFOEZ.GetAvgSensorOverPeriod(AvgEffectiveClock, 10000);
+            State.StockBKTPPTAvg = HWiNFOEZ.GetAvgSensorOverPeriod(PPTIndex, 10000);
             ycruncher.Kill(true);
-            StartYcruncher("BBP", ycruncherThreadCount);
+            for (int i = 0; i < SensorIndexes.Count; i++) RyzenEZ.ApplyPBOOffset($"{i}:{State.CurveOptimizerOffsets[i]}");
+        }
 
-            var NewBBPClockAvg = HWiNFOEZ.GetAvgSensorOverPeriod(AvgEffectiveClock, 10000);
-            var NewBBPPPTAvg = HWiNFOEZ.GetAvgSensorOverPeriod(PPTIndex, 10000);
-
-            RyzenEZ.ryzen.SetPsmMarginAllCores(0);
-
-            ycruncher.Kill(true);
-            StartYcruncher("BKT", ycruncherThreadCount);
-
-            var StockBKTClockAvg = HWiNFOEZ.GetAvgSensorOverPeriod(AvgEffectiveClock, 10000);
-            var StockBKTPPTAvg = HWiNFOEZ.GetAvgSensorOverPeriod(PPTIndex, 10000);
-
-            ycruncher.Kill(true);
-            StartYcruncher("BBP", ycruncherThreadCount);
-
-            var StockBBPClockAvg = HWiNFOEZ.GetAvgSensorOverPeriod(AvgEffectiveClock, 10000);
-            var StockBBPPTTAvg = HWiNFOEZ.GetAvgSensorOverPeriod(PPTIndex, 10000);
-
-            ycruncher.Kill(true);
-
-            for (int i = 0; i < SensorIndexes.Count; i++) RyzenEZ.ApplyPBOOffset($"{i}:{PBOOffsets[i]}");
-
-            Console.WriteLine($"Original Scalar multicore average: {StockBKTClockAvg:F2}");
-            Console.WriteLine($"Original AVX2|512 multicore average: {StockBBPClockAvg:F2}");
-            Console.WriteLine($"New Scalar multicore average: {NewBKTClockAvg:F2}");
-            Console.WriteLine($"New AVX2|512 multicore average: {NewBBPClockAvg:F2}");
-
-            Console.WriteLine($"Improved average multicore clock speed in Scalar workloads by {NewBKTClockAvg / StockBKTClockAvg:F2}x above baseline.");
-            Console.WriteLine($"Improved average multicore clock speed in AVX2|512 workloads by {NewBBPClockAvg / StockBBPClockAvg:F2}x above baseline.");
-            Console.WriteLine($"Original scalar efficiency: {StockBKTClockAvg / StockBKTPPTAvg:F2} MHz/w");
-            Console.WriteLine($"Original AVX2|512 efficiency: {StockBBPClockAvg / StockBBPPTTAvg:F2} MHz/w");
-            Console.WriteLine($"New scalar efficiency: {NewBKTClockAvg / NewBKTPPTAvg:F2} MHz/w");
-            Console.WriteLine($"New AVX2|512 efficiency: {NewBBPClockAvg / NewBBPPPTAvg:F2} MHz/w");
-
-            Console.WriteLine("Enter these settings into your BIOS to make this configuration permanent.");
-            Console.WriteLine("Final PBO settings:");
-
-            for (int i = 0; i < SensorIndexes.Count; i++) Console.WriteLine($"Core {i}: {PBOOffsets[i]}");
-
-            Console.WriteLine("Thank you for using Ryzen PBO VID Sync.");
-            Console.WriteLine("rawhide kobayashi - https://blog.neet.works/");
-
-            Console.WriteLine("Press any key to exit...");
-            Console.ReadKey();
+        private static void PrintClockImprovement()
+        {
+            Console.WriteLine($"Original Scalar 1T average: {State.StockPeak1T:F2}");
+            Console.WriteLine($"Original AVX2|512 1T average: {State.NewPeak1T:F2}");
+            Console.WriteLine($"Original Scalar multicore average: {State.StockBKTClockAvg:F2}");
+            Console.WriteLine($"Original AVX2|512 multicore average: {State.StockBBPClockAvg:F2}");
+            Console.WriteLine($"New Scalar multicore average: {State.NewBKTClockAvg:F2}");
+            Console.WriteLine($"New AVX2|512 multicore average: {State.NewBBPClockAvg:F2}");
+            Console.WriteLine($"Improved average multicore clock speed in Scalar workloads by {State.NewBKTClockAvg / State.StockBKTClockAvg:F2}x above baseline.");
+            Console.WriteLine($"Improved average multicore clock speed in AVX2|512 workloads by {State.NewBBPClockAvg / State.StockBBPClockAvg:F2}x above baseline.");
+            Console.WriteLine($"Original scalar efficiency: {State.StockBKTClockAvg / State.StockBKTPPTAvg:F2} MHz/w");
+            Console.WriteLine($"Original AVX2|512 efficiency: {State.StockBBPClockAvg / State.StockBBPPPTAvg:F2} MHz/w");
+            Console.WriteLine($"New scalar efficiency: {State.NewBKTClockAvg / State.NewBKTPPTAvg:F2} MHz/w");
+            Console.WriteLine($"New AVX2|512 efficiency: {State.NewBBPClockAvg / State.NewBBPPPTAvg:F2} MHz/w");
         }
     }
 }
