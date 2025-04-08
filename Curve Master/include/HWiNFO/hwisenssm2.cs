@@ -174,20 +174,31 @@ namespace CurveMaster.include.HWiNFO
 
         static HWiNFOEZ()
         {
-            try
+            long RetryTimer = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+
+            while (DateTimeOffset.Now.ToUnixTimeMilliseconds() - RetryTimer <= 1000 * 60 * 5 && mmf == null)
             {
-                mmf = MemoryMappedFile.OpenExisting(HWiNFOWrapper.HWiNFO_SENSORS_MAP_FILE_NAME2, MemoryMappedFileRights.Read);
+                try
+                {
+                    mmf = MemoryMappedFile.OpenExisting(HWiNFOWrapper.HWiNFO_SENSORS_MAP_FILE_NAME2, MemoryMappedFileRights.Read);
+                }
+                catch (Exception Ex)
+                {
+                    Console.WriteLine("Waiting for the HWiNFO shared memory interface to become available...");
+                    Thread.Sleep(100);
+                }
             }
-            catch (Exception Ex)
+
+            if (mmf == null)
             {
-                Console.WriteLine("An error occured while opening the HWiNFO shared memory! - " + Ex.Message);
+                Console.WriteLine("An error occured while opening the HWiNFO shared memory!");
                 Console.WriteLine("Most likely, it is not enabled. Please make sure it is enabled, and try again.");
                 Console.WriteLine("Press any key to exit...");
                 Console.ReadKey();
                 Environment.Exit(1);
             }
         }
-        public static (Dictionary<int, Dictionary<string, uint>>, uint, uint) GetSensorIndexes()
+        public static (Dictionary<int, Dictionary<string, uint>>, uint, uint, uint) GetSensorIndexes()
         {
             uint numSensors;
             uint numReadingElements;
@@ -201,6 +212,7 @@ namespace CurveMaster.include.HWiNFO
             Dictionary<int, Dictionary<string, uint>> SensorIndexes = [];
             uint PPTIndex = 0;
             uint AvgEffectiveClock = 0;
+            uint L3Clocks = 0;
 
             using (var accessor = mmf.CreateViewAccessor(0, Marshal.SizeOf(typeof(HWiNFOWrapper._HWiNFO_SENSORS_SHARED_MEM2)), MemoryMappedFileAccess.Read))
             {
@@ -235,7 +247,7 @@ namespace CurveMaster.include.HWiNFO
                         typeof(HWiNFOWrapper._HWiNFO_SENSORS_READING_ELEMENT));
                     handle.Free();
 
-                    Match match = Regex.Match(ReadingElement.szLabelOrig, @"(?<core_vid>Core [0-9]* VID)|(?<core_mhz>Core [0-9]* T0 Effective Clock)|(?<ppt>^CPU PPT$)|(?<avg_eff_clock>Average Effective Clock)");
+                    Match match = Regex.Match(ReadingElement.szLabelOrig, @"(?<core_vid>Core [0-9]* VID)|(?<core_mhz>Core [0-9]* T0 Effective Clock)|(?<ppt>^CPU PPT$)|(?<avg_eff_clock>Average Effective Clock)|(?<l3>L3 Cache)");
 
                     if (match.Success)
                     {
@@ -243,6 +255,7 @@ namespace CurveMaster.include.HWiNFO
                         else if (match.Groups["core_mhz"].Success) mhz_indexes.Add(dwReading);
                         else if (match.Groups["ppt"].Success) PPTIndex = dwReading;
                         else if (match.Groups["avg_eff_clock"].Success) AvgEffectiveClock = dwReading;
+                        else if (match.Groups["l3"].Success) L3Clocks = dwReading;
                     }
                 }
             }
@@ -254,7 +267,7 @@ namespace CurveMaster.include.HWiNFO
                 SensorIndexes[i]["MHz"] = mhz_indexes[i];
             }
 
-            return (SensorIndexes, PPTIndex, AvgEffectiveClock);
+            return (SensorIndexes, PPTIndex, AvgEffectiveClock, L3Clocks);
         }
 
         public static double GetSensorReading(uint index)

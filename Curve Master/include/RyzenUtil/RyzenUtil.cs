@@ -1,12 +1,26 @@
+using System.Management;
 using System.Security.Principal;
 using System.Text.RegularExpressions;
 using ZenStates.Core;
 
 namespace CurveMaster.include.RyzenUtil
 {
+    public class WmiCmdListItem(string text, uint value, bool isSet = false)
+    {
+        public uint Value { get; } = value;
+        public string Text { get; } = text;
+
+        public bool IsSet { get; } = isSet;
+
+        public override string ToString()
+        {
+            return this.Text;
+        }
+    }
+
     public class RyzenEZ
     {
-        public static readonly Cpu ryzen;
+        public static readonly Cpu Ryzen;
         private static readonly Dictionary<int, int> mappedCores;
 
         static RyzenEZ()
@@ -19,7 +33,7 @@ namespace CurveMaster.include.RyzenUtil
 
             try
             {
-                ryzen = new Cpu();
+                Ryzen = new Cpu();
             }
             catch (Exception ex)
             {
@@ -31,9 +45,20 @@ namespace CurveMaster.include.RyzenUtil
             mappedCores = MapLogicalCoresToPhysical();
         }
 
+        private static readonly string wmiAMDACPI = "AMD_ACPI";
+        private static readonly string wmiScope = "root\\wmi";
+        private static ManagementObject? classInstance;
+        private static string? instanceName;
+        private static ManagementBaseObject? pack;
+
+        private static List<WmiCmdListItem> availableCommands = [];
+
+        private static bool wmiPopulated = false;
+        private static bool rebootFlag = false;
+
         public static void Dispose()
         {
-            ryzen.Dispose();
+            Ryzen.Dispose();
         }
 
         private static bool IsAdministrator()
@@ -48,7 +73,7 @@ namespace CurveMaster.include.RyzenUtil
         public static void ApplyPBOOffset(string offsetArgs)
         {
             // This checks if the current SKU has a known register for writing PBO offsets
-            if (ryzen.smu.Rsmu.SMU_MSG_SetDldoPsmMargin != 0)
+            if (Ryzen.smu.Rsmu.SMU_MSG_SetDldoPsmMargin != 0)
             {
                 string validArgFormat = @"^(-?\d{1,2}(,-?\d{1,2})*|\d{1,2}:-?\d{1,2}(,\d{1,2}:-?\d{1,2})*)$";
 
@@ -70,14 +95,14 @@ namespace CurveMaster.include.RyzenUtil
                                     int core = Convert.ToInt32(arg[i].Split(':')[0]);
                                     int offset = Convert.ToInt32(arg[i].Split(':')[1]);
                                     int mapIndex = mappedCores[core] < 8 ? 0 : 1;
-                                    ryzen.SetPsmMarginSingleCore((uint)(((mapIndex << 8) | mappedCores[core] % 8 & 0xF) << 20), offset);
+                                    Ryzen.SetPsmMarginSingleCore((uint)(((mapIndex << 8) | mappedCores[core] % 8 & 0xF) << 20), offset);
                                     Console.WriteLine($"Set logical core {core}, physical core {mappedCores[core]} offset to {offset}!");
                                 }
 
                                 else
                                 {
                                     int mapIndex = mappedCores[i] < 8 ? 0 : 1;
-                                    ryzen.SetPsmMarginSingleCore((uint)(((mapIndex << 8) | mappedCores[i] % 8 & 0xF) << 20), Convert.ToInt32(arg[i]));
+                                    Ryzen.SetPsmMarginSingleCore((uint)(((mapIndex << 8) | mappedCores[i] % 8 & 0xF) << 20), Convert.ToInt32(arg[i]));
                                     Console.WriteLine($"Set logical core {i}, physical core {mappedCores[i]} offset to {arg[i]}!");
                                 }
                             }
@@ -104,10 +129,10 @@ namespace CurveMaster.include.RyzenUtil
 
             int logicalCoreIter = 0;
             
-            for (var i = 0; i < ryzen.info.topology.physicalCores; i++)
+            for (var i = 0; i < Ryzen.info.topology.physicalCores; i++)
             {
                 int mapIndex = i < 8 ? 0 : 1;
-                if (ryzen.GetPsmMarginSingleCore((uint)(((mapIndex << 8) | ((i % 8) & 0xF)) << 20)) != null)
+                if (Ryzen.GetPsmMarginSingleCore((uint)(((mapIndex << 8) | ((i % 8) & 0xF)) << 20)) != null)
                 {
                     mappedCores.Add(logicalCoreIter, i);
                     logicalCoreIter += 1;
@@ -119,7 +144,130 @@ namespace CurveMaster.include.RyzenUtil
 
         public static void ZeroPBOOffsets()
         {
-            ryzen.SetPsmMarginAllCores(0);
+            Ryzen.SetPsmMarginAllCores(0);
+        }
+
+        /* public static void TestClockSpeedShit()
+        { Ugh
+            long last_aperf_eax = 0;
+            long last_aperf_edx = 0;
+            long new_aperf_eax = 0;
+            long new_aperf_edx = 0;
+            long last_mperf_eax = 0;
+            long last_mperf_edx = 0;
+            long new_mperf_eax = 0;
+            long new_mperf_edx = 0;
+
+            while (true)
+            {
+                Thread.Sleep(100);
+                ryzen.ReadMsrTx(0xE7, ref new_mperf_eax, ref new_mperf_edx, 5);
+                ryzen.ReadMsrTx(0xE8, ref eax_aperf, ref edx_aperf, 5);
+                Console.WriteLine((double)eax_aperf / (double)eax_mperf * 4.3);
+            }
+        } */
+
+        private static string GetWmiInstanceName()
+        {
+            try
+            {
+                instanceName = WMI.GetInstanceName(wmiScope, wmiAMDACPI);
+            }
+            catch
+            {
+                // ignored
+            }
+
+            return instanceName!;
+        }
+
+        private static void PopulateWmiFunctions()
+        {
+            try
+            {
+                instanceName = GetWmiInstanceName();
+                classInstance = new ManagementObject(wmiScope,
+                    $"{wmiAMDACPI}.InstanceName='{instanceName}'",
+                    null);
+
+                // Get function names with their IDs
+                string[] functionObjects = { "GetObjectID", "GetObjectID2" };
+                var index = 1;
+
+                foreach (var functionObject in functionObjects)
+                {
+                    try
+                    {
+                        pack = WMI.InvokeMethodAndGetValue(classInstance, functionObject, "pack", null, 0);
+
+                        if (pack != null)
+                        {
+                            var ID = (uint[])pack.GetPropertyValue("ID");
+                            var IDString = (string[])pack.GetPropertyValue("IDString");
+                            var Length = (byte)pack.GetPropertyValue("Length");
+
+                            for (var i = 0; i < Length; ++i)
+                            {
+                                if (IDString[i] == "")
+                                    break;
+
+                                WmiCmdListItem item = new($"{IDString[i] + ": "}{ID[i]:X8}", ID[i], !IDString[i].StartsWith("Get"));
+                                availableCommands.Add(item);
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // ignored
+                    }
+
+                    index++;
+                }
+            }
+            catch
+            {
+                // ignored
+            }
+
+            rebootFlag = true;
+            wmiPopulated = true;
+        }
+
+        public static void ApplyDisableCores(string coreArgs = "Enable")
+        {
+            if (!wmiPopulated) PopulateWmiFunctions();
+
+            // More magic from SMUDebugTool...
+            // uintccd2 = 0x8200; ? :)
+            uint[] ccds = [0x8000, 0x8100];
+
+            var cmdItem = availableCommands.FirstOrDefault(item => item.Text.Contains("Software Downcore Config"));
+
+            if ( cmdItem == null ) {
+                Console.Error.WriteLine("Something has gone terribly wrong, the downcore config option is not present.");
+                Environment.Exit(7);
+            }
+
+            for (int i = 0; i < ccds.Length; i++)
+            {
+                if (coreArgs != "Enable")
+                {
+                    int[] arg = [.. coreArgs.Split(',').Select(int.Parse)];
+
+                    for (int x = 0; x < 8; x++)
+                    {
+                        if (arg.Contains(x + (i * 8)))
+                        {
+                            ccds[i] = Utils.SetBits(ccds[i], x, 1, 1);
+                        }
+                    }
+                }
+
+                // Unreadable garbage... But it's my unreadable garbage. It just prints the bitmaps in the expected,
+                // human order.
+                Console.WriteLine($"New core disablement bitmap for CCD{i} (reversed lower half): {new string([.. Convert.ToString((int)(ccds[i] & 0xFF), 2).PadLeft(8, '0').Reverse()])}");
+                WMI.RunCommand(classInstance, cmdItem.Value, ccds[i]);
+            }
         }
     }
 }

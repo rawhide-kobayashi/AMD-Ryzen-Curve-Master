@@ -1,16 +1,78 @@
 ﻿using System.CodeDom;
 using System.Diagnostics;
+using System.IO.Ports;
+using System.Runtime.InteropServices;
 using System.Security.Principal;
 using CurveMaster.include.HWiNFO;
 using CurveMaster.include.RyzenUtil;
+using Newtonsoft.Json;
 
 namespace CurveMaster
 {
+    public class SerialHeartbeat(string COMPort)
+    {
+        private readonly CancellationTokenSource cts = new();
+        private readonly SerialPort COM = new(COMPort, 115200)
+        {
+            Parity = Parity.None,
+            StopBits = StopBits.One,
+            DataBits = 8,
+            Handshake = Handshake.None
+        };
+
+        private static Dictionary<string, object> WatchdogMonitorTrigger = new() 
+        {
+            { "status", true }
+        };
+
+        public void StartHeartbeat(int intervalMs = 10000)
+        {
+            COM.Open();
+            Task.Run(() => HeartbeatLoop(intervalMs, COM, cts.Token));
+        }
+
+        private static async Task HeartbeatLoop(int intervalMs, SerialPort COM, CancellationToken token)
+        {
+            try
+            {
+                while (!token.IsCancellationRequested)
+                {
+                    COM.WriteLine($"{JsonConvert.SerializeObject(WatchdogMonitorTrigger)}");
+                    await Task.Delay(intervalMs, token);
+                }
+            }
+            catch (TaskCanceledException)
+            {
+                // Graceful exit
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in heartbeat: {ex.Message}");
+            }
+        }
+
+        public void StopHeartbeat()
+        {
+            cts.Cancel();
+        }
+
+        public void Dispose()
+        {
+            StopHeartbeat();
+            WatchdogMonitorTrigger["status"] = false;
+            COM.WriteLine(JsonConvert.SerializeObject(WatchdogMonitorTrigger));
+            COM.Close();
+            COM.Dispose();
+        }
+    }
+
     class Program
     {
         private static readonly Dictionary<int, Dictionary<string, uint>> SensorIndexes = [];
         private static readonly uint PPTIndex;
         private static readonly uint AvgEffectiveClock;
+        private static readonly uint L3Clocks;
+        private static SerialHeartbeat? Watchdog;
 
         static Program()
         {
@@ -22,7 +84,7 @@ namespace CurveMaster
                 Environment.Exit(1);
             }
 
-            (SensorIndexes, PPTIndex, AvgEffectiveClock) = HWiNFOEZ.GetSensorIndexes();
+            (SensorIndexes, PPTIndex, AvgEffectiveClock, L3Clocks) = HWiNFOEZ.GetSensorIndexes();
         }
 
         private static readonly ProcessStartInfo ycruncherInfo = new()
@@ -80,18 +142,36 @@ namespace CurveMaster
             UseShellExecute = false
         };
 
-        private static readonly Process ycruncher = new() {StartInfo = ycruncherInfo};
-        private static readonly Process SCEWinRead = new() {StartInfo = SCEWinReadInfo};
-        private static readonly Process SCEWinWrite = new() {StartInfo = SCEWinWriteInfo};
-        private static readonly Process RebootCMD = new() {StartInfo = RebootCMDInfo};
-
-        private static OCProcessState State = OCProcessState.LoadState();
-
-        private static bool ReadyToReboot = false;
-
-        static int Main()
+        private static readonly ProcessStartInfo AddToTaskSchedulerInfo = new()
         {
-            while (!ReadyToReboot)
+            FileName = "schtasks",
+            Arguments = $"/create /tn \"Ryzen Curve Master\" /tr \"\\\"{Environment.ProcessPath}\\\"\" /sc onlogon /rl highest /f",
+            CreateNoWindow = true,
+            UseShellExecute = false
+        };
+
+        private static readonly Process ycruncher = new() {StartInfo = ycruncherInfo};
+        private static readonly Process SCEWinReadCMD = new() {StartInfo = SCEWinReadInfo};
+        private static readonly Process SCEWinWriteCMD = new() {StartInfo = SCEWinWriteInfo};
+        private static readonly Process RebootCMD = new() {StartInfo = RebootCMDInfo};
+        private static readonly Process AddToTaskSchedulerCMD = new() {StartInfo = AddToTaskSchedulerInfo};
+
+        private static readonly OCProcessState State = OCProcessState.LoadState();
+
+        private static bool FinallyDone = false;
+
+        static void Main()
+        {
+            Console.CancelKeyPress += new ConsoleCancelEventHandler(CleanExitEvent);
+
+            if (State.WatchdogCOMPort != "")
+            {
+                Console.WriteLine($"Sending heartbeat on {State.WatchdogCOMPort}...");
+                Watchdog = new SerialHeartbeat(State.WatchdogCOMPort);
+                Watchdog.StartHeartbeat();
+            }
+
+            while (!FinallyDone)
             {
                 switch (State.CurrentStep)
                 {
@@ -109,17 +189,43 @@ namespace CurveMaster
                         break;
 
                     case "single_core_test_campaign":
-                        Console.WriteLine("Step 2: Lowering Max Freq - Med Temp Curve Shaper and testing 1T stability...");
+                        AllowEarlyQuit();
+                        Console.WriteLine("Step 2: Lowering Curve Optimizer core-by-core and testing 1T stability...");
                         SingleCoreTesting();
                         break;
                 }
             }
             
+            PrintClockImprovement();
+            CleanExit();
+        }
+
+        private static void CleanExitEvent(object? sender, ConsoleCancelEventArgs e)
+        {
+            e.Cancel = true;
+            CleanExit();
+        }
+
+        private static void CleanExit(bool Reboot = false)
+        {
+            State.SaveState();
+            Watchdog?.Dispose();
+            ycruncher.Kill(true);
             ycruncher.Dispose();
             RyzenEZ.Dispose();
             HWiNFOEZ.Dispose();
+            if (Reboot)
+            {
+                AllowEarlyQuit();
+                RebootCMD.Start();
+            }
+            else Environment.Exit(0);
+        }
 
-            return 0;
+        private static void AllowEarlyQuit()
+        {
+            Console.WriteLine("Waiting one minute... Exit the window now if you don't want automation to continue.");
+            Thread.Sleep(MinutesToMilliseconds(1));
         }
 
         private static void StartYcruncher(string testType, string ycruncherCoreAffinity)
@@ -144,39 +250,57 @@ namespace CurveMaster
             Console.WriteLine("Welcome to the Ryzen Curve Master!");
             Console.WriteLine("Your computer is about to be sacrificed to the throes of automation; Bluescreens, freezes, and other crashes may occur. Corrupted EFI vars may occur. Continue at your own peril.");
             Console.WriteLine("Please make sure that your current BIOS settings are accurate and correct, and that EFI vars are not password protected.");
-            Console.WriteLine("Press any key to continue...");
-            Console.ReadKey();
+            Console.WriteLine("If using an external watchdog, please enter the appropriate COM port below and hit enter. Otherwise, just hit enter to begin automation.");
+            string[] ports = SerialPort.GetPortNames();
+            Console.WriteLine("Available ports: " + string.Join(", ", ports));
+            Console.Write("> ");
+            string COMPort = Console.ReadLine()!;
+            if (COMPort != "")
+            {
+                Console.WriteLine($"Sending heartbeat on {COMPort}...");
+                State.WatchdogCOMPort = COMPort;
+                Watchdog = new SerialHeartbeat(COMPort);
+                Watchdog.StartHeartbeat();
+            }
             Console.WriteLine("Testing that SCEWIN can read/write EFI vars...");
-            SCEWinRead.Start();
-            SCEWinRead.WaitForExit();
-            if (SCEWinRead.ExitCode != 0)
+            SCEWinRead();
+            ZeroCurveShaperValues();
+            Console.WriteLine("SCEWIN successfully read EFI vars, attempting write...");
+            SCEWinWrite();
+            Console.WriteLine("SCEWIN successfully wrote EFI vars.");
+            Console.WriteLine("Adding this executable to task scheduler... It will run automatically at every boot. You will be allowed one minute to interrupt it whenever it starts after a reboot.");
+            AddToTaskSchedulerCMD.Start();
+        }
+
+        private static void SCEWinRead()
+        {
+            SCEWinReadCMD.Start();
+            SCEWinReadCMD.WaitForExit();
+            if (SCEWinReadCMD.ExitCode != 0)
             {
                 Console.WriteLine("SCEWIN failed to read EFI vars...");
-                Console.Write(SCEWinRead.StandardError.ReadToEnd());
-                Console.Write(SCEWinRead.StandardOutput.ReadToEnd());
+                Console.Write(SCEWinReadCMD.StandardError.ReadToEnd());
+                Console.Write(SCEWinReadCMD.StandardOutput.ReadToEnd());
                 Console.WriteLine("Press any key to exit...");
                 Console.ReadKey();
                 Environment.Exit(1);
             }
+        }
 
-            ZeroCurveShaperValues();
-
-            Console.WriteLine("SCEWIN successfully read EFI vars, attempting write...");
-
-            SCEWinWrite.Start();
-            SCEWinWrite.WaitForExit();
+        private static void SCEWinWrite()
+        {
+            SCEWinWriteCMD.Start();
+            SCEWinWriteCMD.WaitForExit();
             
-            if (SCEWinWrite.ExitCode != 0)
+            if (SCEWinWriteCMD.ExitCode != 0)
             {
                 Console.WriteLine("SCEWIN failed to write EFI vars...");
-                Console.Write(SCEWinWrite.StandardError.ReadToEnd());
-                Console.Write(SCEWinWrite.StandardOutput.ReadToEnd());
+                Console.Write(SCEWinWriteCMD.StandardError.ReadToEnd());
+                Console.Write(SCEWinWriteCMD.StandardOutput.ReadToEnd());
                 Console.WriteLine("Press any key to exit...");
                 Console.ReadKey();
                 Environment.Exit(1);
             }
-
-            Console.WriteLine("SCEWIN successfully wrote EFI vars.");
         }
 
         private static void ApplyCS(CurveShaperValue CSVal)
@@ -192,96 +316,108 @@ namespace CurveMaster
             return (int)(Minutes * 60 * 1000);
         }
 
-        private static void SingleCoreTesting()
+        private static void DisableAllButOneCore(int Core)
         {
-            // This should run on the first run of this function
-            if (!State.LastRebootChangedCS && State.LastShutdownWasClean && State.MaxF_MedT.Value == 0)
+            string CoreDisableArg = "";
+            for (int i = 0; i < State.CurveOptimizerOffsets.Count; i++) if (i != Core) CoreDisableArg += $"{i},";
+            RyzenEZ.ApplyDisableCores(CoreDisableArg.TrimEnd(','));
+        }
+
+        private static void Testing1TRaiseOffset()
+        {
+            while (true)
             {
-                // Lower curve shaper setting for initial testing and reboot
-                State.MaxF_MedT.Value -= 5;
-                ApplyCS(State.MaxF_MedT);
-                State.LastRebootChangedCS = true;
-                State.LastShutdownWasClean = true;
+                Console.WriteLine($"Core {State.CurrentTestingCore1T} failed at CO value {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}...");
+                State.CurveOptimizerOffsets[State.CurrentTestingCore1T] += 1;
+                RyzenEZ.ApplyPBOOffset(Convert.ToString(State.CurveOptimizerOffsets[State.CurrentTestingCore1T]));
                 State.SaveState();
-                RebootCMD.Start();
-            }
-
-            // This should run if the system had a hard crash during the last testing run
-            else if (!State.LastRebootChangedCS && !State.LastShutdownWasClean)
-            {
-                // Raise curve shaper and reboot
-                State.LoweringValue = false;
-                State.MaxF_MedT.Value += 1;
-                ApplyCS(State.MaxF_MedT);
-                State.LastRebootChangedCS = true;
-                State.LastShutdownWasClean = true;
-                State.SaveState();
-                RebootCMD.Start();
-            }
-
-            // This should run after a clean value change
-            else if (State.LastRebootChangedCS && State.LastShutdownWasClean)
-            {
-                // Run single threaded testing
-                State.LastShutdownWasClean = false;
-
-                if (State.LoweringValue)
+                Console.WriteLine($"Beginning a one hour stress test on core {State.CurrentTestingCore1T} at a raised CO value of {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}...");
+                if (YcruncherThrash1T(60))
                 {
-                    for (int i = 0; i < State.CurveOptimizerOffsets.Count; i++)
-                    {
-                        State.LastCoreTested1T = i;
-                        StartYcruncher("BKT", $"{i * 2}-{(i * 2) + 1}");
-                        Thread.Sleep(MinutesToMilliseconds(5));
-                        // God I don't want to interpret STDOUT. If MHz is high, we did not crash!
-                        if (HWiNFOEZ.GetAvgSensorOverPeriod(SensorIndexes[i]["MHz"], 5000) > 4000) ycruncher.Kill(true);
-
-                        else
-                        {
-                            // Raise curve shaper and reboot
-                            State.LoweringValue = false;
-                            State.MaxF_MedT.Value += 1;
-                            ApplyCS(State.MaxF_MedT);
-                            State.LastRebootChangedCS = true;
-                            State.LastShutdownWasClean = true;
-                            State.SaveState();
-                            RebootCMD.Start();
-                        }
-                    }
+                    State.CurveOptimizerOffsets[State.CurrentTestingCore1T] += 1;
+                    RyzenEZ.ApplyPBOOffset(Convert.ToString(State.CurveOptimizerOffsets[State.CurrentTestingCore1T]));
+                    State.SaveState();
                 }
 
                 else
                 {
-                    // Assuming that the first core to crash is the worst, when raising the curve, test the last-tested core first...
-                    StartYcruncher("BKT", $"{State.LastCoreTested1T * 2}-{(State.LastCoreTested1T * 2) + 1}");
-                    Thread.Sleep(MinutesToMilliseconds(5));
-                    if (HWiNFOEZ.GetAvgSensorOverPeriod(SensorIndexes[State.LastCoreTested1T]["MHz"], 5000) > 4000)
-                    ycruncher.Kill(true);
-
-                    // ...then return to doing a full battery, this time for much, much longer, just to make sure...
-                    for (int x = 0; x < 10; x++)
+                    if (State.CurrentTestingCore1T < State.CurveOptimizerOffsets.Count)
                     {
-                        for (int i = 0; i < State.CurveOptimizerOffsets.Count; i++)
-                        {
-                            State.LastCoreTested1T = i;
-                            StartYcruncher("BKT", $"{i * 2}-{(i * 2) + 1}");
-                            Thread.Sleep(MinutesToMilliseconds(10));
-                            if (HWiNFOEZ.GetAvgSensorOverPeriod(SensorIndexes[i]["MHz"], 5000) > 4000) ycruncher.Kill(true);
+                        State.CurrentTestingCore1T += 1;
+                        Console.WriteLine($"Testing concluded on core {State.CurrentTestingCore1T}, final CO value {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}");
+                        DisableAllButOneCore(State.CurrentTestingCore1T);
+                        State.LastShutdownWasClean = true;
+                        CleanExit(true);
+                    }
 
-                            else
-                            {
-                                // Raise curve shaper and reboot
-                                State.LoweringValue = false;
-                                State.MaxF_MedT.Value += 1;
-                                ApplyCS(State.MaxF_MedT);
-                                State.LastRebootChangedCS = true;
-                                State.LastShutdownWasClean = true;
-                                State.SaveState();
-                                RebootCMD.Start();
-                            }
-                        }
+                    else
+                    {
+                        // Running this without a parameter actually enables all cores!
+                        RyzenEZ.ApplyDisableCores();
+                        // Continue to the next step...
+                        CleanExit();
                     }
                 }
             }
+        }
+
+        private static bool YcruncherThrash1T(int TestRounds)
+        {
+            long StartTime;
+            // Rounds last thirty seconds
+            for (int i = 0; i < TestRounds; i++)
+            {
+                StartYcruncher("BKT", $"{State.CurrentTestingCore1T * 2}-{(State.CurrentTestingCore1T * 2) + 1}");
+                StartTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+                // God I don't want to interpret STDOUT. If MHz is high, we did not crash!
+                while (DateTimeOffset.Now.ToUnixTimeMilliseconds() - StartTime <= 30000)
+                {
+                    if (HWiNFOEZ.GetAvgSensorOverPeriod(L3Clocks, 5000) < 4000) 
+                    {
+                        ycruncher.Kill(true);
+                        return true;
+                    }
+                }
+
+                ycruncher.Kill(true);
+                Thread.Sleep(30000);
+            }
+
+            return false;
+        }
+
+        private static void SingleCoreTesting()
+        {
+            // This should run on the first run of this function
+            if (State.CurrentTestingCore1T == -1)
+            {
+                Console.WriteLine("Disabling all cores but core 0 and rebooting...");
+                DisableAllButOneCore(0);
+                State.LastShutdownWasClean = true;
+                State.CurrentTestingCore1T = 0;
+                CleanExit(true);
+            }
+
+            else if (State.LastShutdownWasClean)
+            {
+                // Run single threaded testing, lowering value until crash...
+                State.LastShutdownWasClean = false;
+                Console.WriteLine($"Beginning a single-thread test campaign on {State.CurrentTestingCore1T}...");
+                while (true)
+                {
+                    if (YcruncherThrash1T(5)) Testing1TRaiseOffset();
+
+                    else
+                    {
+                        Console.WriteLine($"Core {State.CurrentTestingCore1T} succeeded a five minute stress test at CO value {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}... Lowering by 1.");
+                        State.CurveOptimizerOffsets[State.CurrentTestingCore1T] -= 1;
+                        RyzenEZ.ApplyPBOOffset(Convert.ToString(State.CurveOptimizerOffsets[State.CurrentTestingCore1T]));
+                        State.SaveState();
+                    }
+                }
+            }
+
+            else Testing1TRaiseOffset();
         }
 
         private static void ZeroCurveShaperValues()
@@ -320,16 +456,32 @@ namespace CurveMaster
             Console.WriteLine("Setting PBO offset to 0 on all cores...");
             RyzenEZ.ZeroPBOOffsets();
 
+            Console.WriteLine("Gathering initial 1T clock speed data...");
+
+            for (int i = 0; i < SensorIndexes.Count; i++)
+            {
+                StartYcruncher("BKT", $"{i * 2}-{(i * 2) + 1}");
+                Thread.Sleep(1000);
+                State.StockBKTClockAvg1T.Add(HWiNFOEZ.GetAvgSensorOverPeriod(SensorIndexes[i]["MHz"], 5000));
+                ycruncher.Kill(true);
+                StartYcruncher("BBP", $"{i * 2}-{(i * 2) + 1}");
+                Thread.Sleep(1000);
+                State.StockBBPClockAvg1T.Add(HWiNFOEZ.GetAvgSensorOverPeriod(SensorIndexes[i]["MHz"], 5000));
+                ycruncher.Kill(true);
+            }
+
             Console.WriteLine("Beginning y-cruncher BKT stress test...");
 
-            string ycruncherCoreAffinity = $"0-{(SensorIndexes.Count * 2) - 1}";
+            string ycruncherAllCore = $"0-{(SensorIndexes.Count * 2) - 1}";
 
-            StartYcruncher("BKT", ycruncherCoreAffinity);
+            StartYcruncher("BKT", ycruncherAllCore);
 
             for (int i = 0; i < SensorIndexes.Count; i++)
             {
                 State.CurveOptimizerOffsets.Add(0);
             }
+
+            State.SaveState();
 
             while (true)
             {   
@@ -337,7 +489,7 @@ namespace CurveMaster
                 double[] CoreVIDs = new double[SensorIndexes.Count];
                 long StartTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
 
-                while (DateTimeOffset.Now.ToUnixTimeMilliseconds() - StartTime <= 1000)
+                while (DateTimeOffset.Now.ToUnixTimeMilliseconds() - StartTime <= 5000)
                 {
                     for (int i = 0; i < SensorIndexes.Count; i++) CoreVIDs[i] += HWiNFOEZ.GetSensorReading(SensorIndexes[i]["VID"]);
                     Thread.Sleep(200);
@@ -355,26 +507,40 @@ namespace CurveMaster
                 {
                     int HighestIndex = GetHighestVIDIndex(CoreAvgVIDs);
                     State.CurveOptimizerOffsets[HighestIndex] -= 1;
+                    State.SaveState();
                     Console.WriteLine($"Worst VID delta: {CoreAvgVIDs.Max() - CoreAvgVIDs.Min():F3}");
                     RyzenEZ.ApplyPBOOffset($"{HighestIndex}:{State.CurveOptimizerOffsets[HighestIndex]}");
                 }
 
                 // Give the values a chance to settle after changing...
-                Thread.Sleep(2000);
+                Thread.Sleep(5000);
             }
 
-            Console.WriteLine("VIDs synchronized, gathering initial clock speed data...");
+            Console.WriteLine("VIDs synchronized, gathering initial multithreaded clock speed data...");
             RyzenEZ.ZeroPBOOffsets();
-            StartYcruncher("BKT", ycruncherCoreAffinity);
+            StartYcruncher("BKT", ycruncherAllCore);
             State.StockBKTClockAvg = HWiNFOEZ.GetAvgSensorOverPeriod(AvgEffectiveClock, 10000);
             State.StockBKTPPTAvg = HWiNFOEZ.GetAvgSensorOverPeriod(PPTIndex, 10000);
             ycruncher.Kill(true);
-            StartYcruncher("BBP", ycruncherCoreAffinity);
+            StartYcruncher("BBP", ycruncherAllCore);
             State.StockBBPClockAvg = HWiNFOEZ.GetAvgSensorOverPeriod(AvgEffectiveClock, 10000);
             State.StockBBPPPTAvg = HWiNFOEZ.GetAvgSensorOverPeriod(PPTIndex, 10000);
             ycruncher.Kill(true);
+            State.SaveState();
             
             for (int i = 0; i < SensorIndexes.Count; i++) RyzenEZ.ApplyPBOOffset($"{i}:{State.CurveOptimizerOffsets[i]}");
+            
+            SCEWinRead();
+            List<string> Lines = File.ReadAllLines("SCEWIN\\nvram.txt").ToList();
+
+            int StartIndex = Lines.FindIndex(x => x.Equals("Setup Question	= Core 0 Curve Optimizer Magnitude"));
+
+            for (int i = 0; i < State.CurveOptimizerOffsets.Count; i++)
+            {
+                Lines[StartIndex + (i * 20) + 5] = $"Value	=<{State.CurveOptimizerOffsets[i]}>";
+            }
+
+            File.WriteAllLines("SCEWIN\\nvram.txt", Lines);
         }
 
         private static void PrintClockImprovement()

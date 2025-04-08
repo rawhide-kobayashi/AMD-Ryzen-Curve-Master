@@ -13,9 +13,11 @@ namespace CurveMaster
         public string CurrentStep = "init";
         public List<int> CurveOptimizerOffsets = [];
         public bool LastShutdownWasClean = true;
-        public static readonly string StateFilePath = "state.json";
+        public static readonly string StateFilePath = $"{Environment.CurrentDirectory}\\state.json";
 
         // Basic statistics to gauge real improvements
+        public List<double> StockBKTClockAvg1T = [];
+        public List<double> StockBBPClockAvg1T = [];
         public double StockBKTClockAvg;
         public double StockBKTPPTAvg;
         public double StockBBPClockAvg;
@@ -44,10 +46,10 @@ namespace CurveMaster
         public CurveShaperValue MaxF_MedT = new("Setup Question	= Max Frequency - Med Temperature Magnitude", 0);
         public CurveShaperValue MaxF_HiT = new("Setup Question	= Max Frequency - High Temperature Magnitude", 0);
 
-        public int LastCoreTested1T;
         public bool LastRebootChangedCS = false;
         public bool LoweringValue = true;
-        
+        public int CurrentTestingCore1T = -1;
+        public string WatchdogCOMPort = "";
 
         public void SaveState()
         {
@@ -71,7 +73,7 @@ namespace CurveMaster
                 if (File.Exists(StateFilePath))
                 {
                     string json = File.ReadAllText(StateFilePath);
-                    return JsonConvert.DeserializeObject<OCProcessState>(json);
+                    return JsonConvert.DeserializeObject<OCProcessState>(json)!;
                 }
             }
             catch (Exception ex)
