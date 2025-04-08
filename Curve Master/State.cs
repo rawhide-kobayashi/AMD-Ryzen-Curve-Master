@@ -13,7 +13,7 @@ namespace CurveMaster
         public string CurrentStep = "init";
         public List<int> CurveOptimizerOffsets = [];
         public bool LastShutdownWasClean = true;
-        public static readonly string StateFilePath = $"{Environment.CurrentDirectory}\\state.json";
+        public static readonly string StateFilePath = $"{Path.GetDirectoryName(Environment.ProcessPath)}\\state.json";
 
         // Basic statistics to gauge real improvements
         public List<double> StockBKTClockAvg1T = [];

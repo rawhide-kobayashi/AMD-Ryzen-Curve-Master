@@ -162,6 +162,7 @@ namespace CurveMaster
 
         static void Main()
         {
+            Directory.SetCurrentDirectory(Path.GetDirectoryName(Environment.ProcessPath)!);
             Console.CancelKeyPress += new ConsoleCancelEventHandler(CleanExitEvent);
 
             if (State.WatchdogCOMPort != "")
@@ -183,6 +184,8 @@ namespace CurveMaster
                         break;
 
                     case "vid_sync":
+                        AllowEarlyQuit();
+                        CheckPBOEFIVars();
                         Console.WriteLine("Step 1: Synchronizing core VIDs under y-cruncher BKT...");
                         SynchronizeVIDs();
                         State.CurrentStep = "single_core_test_campaign";
@@ -190,6 +193,7 @@ namespace CurveMaster
 
                     case "single_core_test_campaign":
                         AllowEarlyQuit();
+                        CheckPBOEFIVars();
                         Console.WriteLine("Step 2: Lowering Curve Optimizer core-by-core and testing 1T stability...");
                         SingleCoreTesting();
                         break;
@@ -198,6 +202,100 @@ namespace CurveMaster
             
             PrintClockImprovement();
             CleanExit();
+        }
+
+        private static void CheckPBOEFIVars()
+        {
+            // For some ungodly reason, it seems that changing curve shaper values changes the PBO settings... So...
+            // Might have to double reboot to do things right...
+
+            bool RebootFlag = false;
+            SCEWinRead();
+            List<string> Lines = File.ReadAllLines("SCEWIN\\nvram.txt").ToList();
+            int StartIndex = Lines.FindIndex(x => x.Equals("Setup Question	= Precision Boost Overdrive"));
+
+            if (Lines[StartIndex + 5] == "Options	=*[FF]Auto	// Move \"*\" to the desired Option")
+            {
+                Lines[StartIndex + 5] = "Options	=[FF]Auto	// Move \"*\" to the desired Option";
+                Lines[StartIndex + 8] = "         *[02]Advanced";
+                Console.WriteLine("PBO EFI var not set to Advanced");
+                RebootFlag = true;
+            }
+
+            StartIndex = Lines.FindIndex(x => x.Equals("Setup Question	= PBO Limits"));
+
+            if (Lines[StartIndex + 5] == "Options	=*[FF]Auto	// Move \"*\" to the desired Option")
+            {
+                Lines[StartIndex + 5] = "Options	=[FF]Auto	// Move \"*\" to the desired Option";
+                Lines[StartIndex + 7] = "         *[01]Motherboard";
+                Console.WriteLine("PBO limits not set to Motherboard");
+                RebootFlag = true;
+            }
+
+            StartIndex = Lines.FindIndex(x => x.Equals("Setup Question	= Precision Boost Overdrive Scalar Ctrl"));
+
+            if (Lines[StartIndex + 5] == "Options	=*[FF]Auto	// Move \"*\" to the desired Option")
+            {
+                Lines[StartIndex + 5] = "Options	=[FF]Auto	// Move \"*\" to the desired Option";
+                Lines[StartIndex + 6] = "         *[01]Manual";
+                Console.WriteLine("PBO Scalar not set to manual");
+                RebootFlag = true;
+            }
+
+            StartIndex = Lines.FindIndex(x => x.Equals("Setup Question	= Precision Boost Overdrive Scalar"));
+
+            if (Lines[StartIndex + 5] == "Options	=[64]1X	// Move \"*\" to the desired Option")
+            {
+                Lines[StartIndex + 5] = "Options	=*[64]1X	// Move \"*\" to the desired Option";
+                Lines[StartIndex + 6] = "         [C8]2X";
+                Lines[StartIndex + 7] = "         [12C]3X";
+                Lines[StartIndex + 8] = "         [190]4X";
+                Lines[StartIndex + 9] = "         [1F4]5X";
+                Lines[StartIndex + 10] = "         [258]6X";
+                Lines[StartIndex + 11] = "         [2BC]7X";
+                Lines[StartIndex + 12] = "         [320]8X";
+                Lines[StartIndex + 13] = "         [384]9X";
+                Lines[StartIndex + 14] = "         [3E8]10X";
+                Console.WriteLine("PBO Scalar value not set to 1x");
+                RebootFlag = true;
+            }
+
+            StartIndex = Lines.FindIndex(x => x.Equals("Setup Question	= CPU Boost Clock Override"));
+
+            if (Lines[StartIndex + 5] == "Options	=*[00]Disabled	// Move \"*\" to the desired Option")
+            {
+                Lines[StartIndex + 5] = "Options	=[00]Disabled	// Move \"*\" to the desired Option";
+                Lines[StartIndex + 6] = "         *[01]Enabled (Positive)";
+                Console.WriteLine("Boost clock override not set to positive");
+                RebootFlag = true;
+            }
+
+            StartIndex = Lines.FindIndex(x => x.Equals("Setup Question	= Max CPU Boost Clock Override(+)"));
+
+            if (Lines[StartIndex + 5] != "Value	=<200>")
+            {
+                Lines[StartIndex + 5] = "Value	=<200>";
+                Console.WriteLine("Boost clock override not maximized");
+                RebootFlag = true;
+            }
+
+            StartIndex = Lines.FindIndex(x => x.Equals("Setup Question	= Curve Optimizer"));
+
+            if (Lines[StartIndex + 5] == "Options	=*[00]Disable	// Move \"*\" to the desired Option")
+            {
+                Lines[StartIndex + 5] = "Options	=[00]Disable	// Move \"*\" to the desired Option";
+                Lines[StartIndex + 7] = "         *[02]Per Core";
+                Console.WriteLine("Curve Optimizer not set to per-core");
+                RebootFlag = true;
+            }
+
+            if (RebootFlag) 
+            {
+                Console.WriteLine("Incorrect PBO EFI vars found, correcting and rebooting...");
+                File.WriteAllLines("SCEWIN\\nvram.txt", Lines);
+                SCEWinWrite();
+                CleanExit(true);
+            }
         }
 
         private static void CleanExitEvent(object? sender, ConsoleCancelEventArgs e)
@@ -210,7 +308,12 @@ namespace CurveMaster
         {
             State.SaveState();
             Watchdog?.Dispose();
-            ycruncher.Kill(true);
+            try
+            {
+                ycruncher.Kill(true);
+            }
+            // Just the easiest way to deal with a situation where it was never started...
+            catch {}
             ycruncher.Dispose();
             RyzenEZ.Dispose();
             HWiNFOEZ.Dispose();
@@ -327,11 +430,11 @@ namespace CurveMaster
         {
             while (true)
             {
-                Console.WriteLine($"Core {State.CurrentTestingCore1T} failed at CO value {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}...");
+                Console.WriteLine($"Core {State.CurrentTestingCore1T} failed at Curve Optimizer value {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}...");
                 State.CurveOptimizerOffsets[State.CurrentTestingCore1T] += 1;
                 RyzenEZ.ApplyPBOOffset(Convert.ToString(State.CurveOptimizerOffsets[State.CurrentTestingCore1T]));
                 State.SaveState();
-                Console.WriteLine($"Beginning a one hour stress test on core {State.CurrentTestingCore1T} at a raised CO value of {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}...");
+                Console.WriteLine($"Beginning a one hour stress test on core {State.CurrentTestingCore1T} at a raised Curve Optimizer value of {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}...");
                 if (YcruncherThrash1T(60))
                 {
                     State.CurveOptimizerOffsets[State.CurrentTestingCore1T] += 1;
@@ -343,8 +446,8 @@ namespace CurveMaster
                 {
                     if (State.CurrentTestingCore1T < State.CurveOptimizerOffsets.Count)
                     {
+                        Console.WriteLine($"Testing concluded on core {State.CurrentTestingCore1T}, final Curve Optimizer value {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}");
                         State.CurrentTestingCore1T += 1;
-                        Console.WriteLine($"Testing concluded on core {State.CurrentTestingCore1T}, final CO value {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}");
                         DisableAllButOneCore(State.CurrentTestingCore1T);
                         State.LastShutdownWasClean = true;
                         CleanExit(true);
@@ -367,7 +470,8 @@ namespace CurveMaster
             // Rounds last thirty seconds
             for (int i = 0; i < TestRounds; i++)
             {
-                StartYcruncher("BKT", $"{State.CurrentTestingCore1T * 2}-{(State.CurrentTestingCore1T * 2) + 1}");
+                //StartYcruncher("BKT", $"{State.CurrentTestingCore1T * 2}-{(State.CurrentTestingCore1T * 2) + 1}");
+                StartYcruncher("BKT", "0");
                 StartTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
                 // God I don't want to interpret STDOUT. If MHz is high, we did not crash!
                 while (DateTimeOffset.Now.ToUnixTimeMilliseconds() - StartTime <= 30000)
@@ -409,7 +513,7 @@ namespace CurveMaster
 
                     else
                     {
-                        Console.WriteLine($"Core {State.CurrentTestingCore1T} succeeded a five minute stress test at CO value {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}... Lowering by 1.");
+                        Console.WriteLine($"Core {State.CurrentTestingCore1T} succeeded a five minute stress test at Curve Optimizer value {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}... Lowering by 1.");
                         State.CurveOptimizerOffsets[State.CurrentTestingCore1T] -= 1;
                         RyzenEZ.ApplyPBOOffset(Convert.ToString(State.CurveOptimizerOffsets[State.CurrentTestingCore1T]));
                         State.SaveState();
