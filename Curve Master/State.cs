@@ -48,8 +48,10 @@ namespace CurveMaster
 
         public bool LastRebootChangedCS = false;
         public bool LoweringValue = true;
-        public int CurrentTestingCore1T = -1;
+        public int CurrentTestingCore1T = 0;
         public string WatchdogCOMPort = "";
+        public int TotalTestingRounds1T = 0;
+        public bool MoveToNextRound = false;
 
         public void SaveState()
         {

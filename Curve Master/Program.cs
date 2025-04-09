@@ -78,8 +78,8 @@ namespace CurveMaster
         {
             if (!IsAdministrator())
             {
-                Console.WriteLine("This application must be run as an administrator.");
-                Console.WriteLine("Press any key to exit...");
+                Log("This application must be run as an administrator.");
+                Log("Press any key to exit...");
                 Console.ReadKey();
                 Environment.Exit(1);
             }
@@ -167,7 +167,7 @@ namespace CurveMaster
 
             if (State.WatchdogCOMPort != "")
             {
-                Console.WriteLine($"Sending heartbeat on {State.WatchdogCOMPort}...");
+                Log($"Sending heartbeat on {State.WatchdogCOMPort}...");
                 Watchdog = new SerialHeartbeat(State.WatchdogCOMPort);
                 Watchdog.StartHeartbeat();
             }
@@ -177,7 +177,7 @@ namespace CurveMaster
                 switch (State.CurrentStep)
                 {
                     case "init":
-                        Console.WriteLine("Step 0: Collect system information, warn user, and verify capabilities...");
+                        Log("Step 0: Collect system information, warn user, and verify capabilities...");
                         Init();
                         State.CurrentStep = "vid_sync";
                         State.SaveState();
@@ -186,7 +186,7 @@ namespace CurveMaster
                     case "vid_sync":
                         AllowEarlyQuit();
                         CheckPBOEFIVars();
-                        Console.WriteLine("Step 1: Synchronizing core VIDs under y-cruncher BKT...");
+                        Log("Step 1: Synchronizing core VIDs under y-cruncher BKT...");
                         SynchronizeVIDs();
                         State.CurrentStep = "single_core_test_campaign";
                         break;
@@ -194,7 +194,7 @@ namespace CurveMaster
                     case "single_core_test_campaign":
                         AllowEarlyQuit();
                         CheckPBOEFIVars();
-                        Console.WriteLine("Step 2: Lowering Curve Optimizer core-by-core and testing 1T stability...");
+                        Log("Step 2: Lowering Curve Optimizer core-by-core and testing 1T stability...");
                         SingleCoreTesting();
                         break;
                 }
@@ -203,6 +203,12 @@ namespace CurveMaster
             PrintClockImprovement();
             CleanExit();
         }
+
+        static void Log(string message)
+        {
+            Console.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] {message}");
+        }
+
 
         private static void CheckPBOEFIVars()
         {
@@ -218,7 +224,7 @@ namespace CurveMaster
             {
                 Lines[StartIndex + 5] = "Options	=[FF]Auto	// Move \"*\" to the desired Option";
                 Lines[StartIndex + 8] = "         *[02]Advanced";
-                Console.WriteLine("PBO EFI var not set to Advanced");
+                Log("PBO EFI var not set to Advanced");
                 RebootFlag = true;
             }
 
@@ -228,7 +234,7 @@ namespace CurveMaster
             {
                 Lines[StartIndex + 5] = "Options	=[FF]Auto	// Move \"*\" to the desired Option";
                 Lines[StartIndex + 7] = "         *[01]Motherboard";
-                Console.WriteLine("PBO limits not set to Motherboard");
+                Log("PBO limits not set to Motherboard");
                 RebootFlag = true;
             }
 
@@ -238,7 +244,7 @@ namespace CurveMaster
             {
                 Lines[StartIndex + 5] = "Options	=[FF]Auto	// Move \"*\" to the desired Option";
                 Lines[StartIndex + 6] = "         *[01]Manual";
-                Console.WriteLine("PBO Scalar not set to manual");
+                Log("PBO Scalar not set to manual");
                 RebootFlag = true;
             }
 
@@ -256,7 +262,7 @@ namespace CurveMaster
                 Lines[StartIndex + 12] = "         [320]8X";
                 Lines[StartIndex + 13] = "         [384]9X";
                 Lines[StartIndex + 14] = "         [3E8]10X";
-                Console.WriteLine("PBO Scalar value not set to 1x");
+                Log("PBO Scalar value not set to 1x");
                 RebootFlag = true;
             }
 
@@ -266,7 +272,7 @@ namespace CurveMaster
             {
                 Lines[StartIndex + 5] = "Options	=[00]Disabled	// Move \"*\" to the desired Option";
                 Lines[StartIndex + 6] = "         *[01]Enabled (Positive)";
-                Console.WriteLine("Boost clock override not set to positive");
+                Log("Boost clock override not set to positive");
                 RebootFlag = true;
             }
 
@@ -275,7 +281,7 @@ namespace CurveMaster
             if (Lines[StartIndex + 5] != "Value	=<200>")
             {
                 Lines[StartIndex + 5] = "Value	=<200>";
-                Console.WriteLine("Boost clock override not maximized");
+                Log("Boost clock override not maximized");
                 RebootFlag = true;
             }
 
@@ -285,13 +291,13 @@ namespace CurveMaster
             {
                 Lines[StartIndex + 5] = "Options	=[00]Disable	// Move \"*\" to the desired Option";
                 Lines[StartIndex + 7] = "         *[02]Per Core";
-                Console.WriteLine("Curve Optimizer not set to per-core");
+                Log("Curve Optimizer not set to per-core");
                 RebootFlag = true;
             }
 
             if (RebootFlag) 
             {
-                Console.WriteLine("Incorrect PBO EFI vars found, correcting and rebooting...");
+                Log("Incorrect PBO EFI vars found, correcting and rebooting...");
                 File.WriteAllLines("SCEWIN\\nvram.txt", Lines);
                 SCEWinWrite();
                 CleanExit(true);
@@ -317,6 +323,8 @@ namespace CurveMaster
             ycruncher.Dispose();
             RyzenEZ.Dispose();
             HWiNFOEZ.Dispose();
+            State.LastShutdownWasClean = true;
+            State.SaveState();
             if (Reboot)
             {
                 AllowEarlyQuit();
@@ -327,8 +335,8 @@ namespace CurveMaster
 
         private static void AllowEarlyQuit()
         {
-            Console.WriteLine("Waiting one minute... Exit the window now if you don't want automation to continue.");
-            Thread.Sleep(MinutesToMilliseconds(1));
+            //Log("Waiting one minute... Exit the window now if you don't want automation to continue.");
+            //Thread.Sleep(MinutesToMilliseconds(1));
         }
 
         private static void StartYcruncher(string testType, string ycruncherCoreAffinity)
@@ -350,28 +358,28 @@ namespace CurveMaster
 
         private static void Init()
         {
-            Console.WriteLine("Welcome to the Ryzen Curve Master!");
-            Console.WriteLine("Your computer is about to be sacrificed to the throes of automation; Bluescreens, freezes, and other crashes may occur. Corrupted EFI vars may occur. Continue at your own peril.");
-            Console.WriteLine("Please make sure that your current BIOS settings are accurate and correct, and that EFI vars are not password protected.");
-            Console.WriteLine("If using an external watchdog, please enter the appropriate COM port below and hit enter. Otherwise, just hit enter to begin automation.");
+            Log("Welcome to the Ryzen Curve Master!");
+            Log("Your computer is about to be sacrificed to the throes of automation; Bluescreens, freezes, and other crashes may occur. Corrupted EFI vars may occur. Continue at your own peril.");
+            Log("Please make sure that your current BIOS settings are accurate and correct, and that EFI vars are not password protected.");
+            Log("If using an external watchdog, please enter the appropriate COM port below and hit enter. Otherwise, just hit enter to begin automation.");
             string[] ports = SerialPort.GetPortNames();
-            Console.WriteLine("Available ports: " + string.Join(", ", ports));
+            Log("Available ports: " + string.Join(", ", ports));
             Console.Write("> ");
             string COMPort = Console.ReadLine()!;
             if (COMPort != "")
             {
-                Console.WriteLine($"Sending heartbeat on {COMPort}...");
+                Log($"Sending heartbeat on {COMPort}...");
                 State.WatchdogCOMPort = COMPort;
                 Watchdog = new SerialHeartbeat(COMPort);
                 Watchdog.StartHeartbeat();
             }
-            Console.WriteLine("Testing that SCEWIN can read/write EFI vars...");
+            Log("Testing that SCEWIN can read/write EFI vars...");
             SCEWinRead();
             ZeroCurveShaperValues();
-            Console.WriteLine("SCEWIN successfully read EFI vars, attempting write...");
+            Log("SCEWIN successfully read EFI vars, attempting write...");
             SCEWinWrite();
-            Console.WriteLine("SCEWIN successfully wrote EFI vars.");
-            Console.WriteLine("Adding this executable to task scheduler... It will run automatically at every boot. You will be allowed one minute to interrupt it whenever it starts after a reboot.");
+            Log("SCEWIN successfully wrote EFI vars.");
+            Log("Adding this executable to task scheduler... It will run automatically at every boot. You will be allowed one minute to interrupt it whenever it starts after a reboot.");
             AddToTaskSchedulerCMD.Start();
         }
 
@@ -381,10 +389,10 @@ namespace CurveMaster
             SCEWinReadCMD.WaitForExit();
             if (SCEWinReadCMD.ExitCode != 0)
             {
-                Console.WriteLine("SCEWIN failed to read EFI vars...");
+                Log("SCEWIN failed to read EFI vars...");
                 Console.Write(SCEWinReadCMD.StandardError.ReadToEnd());
                 Console.Write(SCEWinReadCMD.StandardOutput.ReadToEnd());
-                Console.WriteLine("Press any key to exit...");
+                Log("Press any key to exit...");
                 Console.ReadKey();
                 Environment.Exit(1);
             }
@@ -397,10 +405,10 @@ namespace CurveMaster
             
             if (SCEWinWriteCMD.ExitCode != 0)
             {
-                Console.WriteLine("SCEWIN failed to write EFI vars...");
+                Log("SCEWIN failed to write EFI vars...");
                 Console.Write(SCEWinWriteCMD.StandardError.ReadToEnd());
                 Console.Write(SCEWinWriteCMD.StandardOutput.ReadToEnd());
-                Console.WriteLine("Press any key to exit...");
+                Log("Press any key to exit...");
                 Console.ReadKey();
                 Environment.Exit(1);
             }
@@ -419,23 +427,19 @@ namespace CurveMaster
             return (int)(Minutes * 60 * 1000);
         }
 
-        private static void DisableAllButOneCore(int Core)
+        private static bool Testing1TRaiseOffset()
         {
-            string CoreDisableArg = "";
-            for (int i = 0; i < State.CurveOptimizerOffsets.Count; i++) if (i != Core) CoreDisableArg += $"{i},";
-            RyzenEZ.ApplyDisableCores(CoreDisableArg.TrimEnd(','));
-        }
-
-        private static void Testing1TRaiseOffset()
-        {
+            double LastAvgMHz = 0;
+            bool ThrashResult;
             while (true)
             {
-                Console.WriteLine($"Core {State.CurrentTestingCore1T} failed at Curve Optimizer value {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}...");
+                Log($"Core {State.CurrentTestingCore1T} failed at Curve Optimizer value {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}...");
                 State.CurveOptimizerOffsets[State.CurrentTestingCore1T] += 1;
                 RyzenEZ.ApplyPBOOffset(Convert.ToString(State.CurveOptimizerOffsets[State.CurrentTestingCore1T]));
                 State.SaveState();
-                Console.WriteLine($"Beginning a one hour stress test on core {State.CurrentTestingCore1T} at a raised Curve Optimizer value of {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}...");
-                if (YcruncherThrash1T(60))
+                Log($"Beginning a one hour stress test on core {State.CurrentTestingCore1T} at a raised Curve Optimizer value of {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}...");
+                (ThrashResult, LastAvgMHz) = YcruncherThrash1T(60, LastAvgMHz, false);
+                if (ThrashResult)
                 {
                     State.CurveOptimizerOffsets[State.CurrentTestingCore1T] += 1;
                     RyzenEZ.ApplyPBOOffset(Convert.ToString(State.CurveOptimizerOffsets[State.CurrentTestingCore1T]));
@@ -446,11 +450,11 @@ namespace CurveMaster
                 {
                     if (State.CurrentTestingCore1T < State.CurveOptimizerOffsets.Count)
                     {
-                        Console.WriteLine($"Testing concluded on core {State.CurrentTestingCore1T}, final Curve Optimizer value {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}");
-                        State.CurrentTestingCore1T += 1;
-                        DisableAllButOneCore(State.CurrentTestingCore1T);
+                        Log($"Testing concluded on core {State.CurrentTestingCore1T}, final Curve Optimizer value {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}");
+                        State.MoveToNextRound = true;
                         State.LastShutdownWasClean = true;
-                        CleanExit(true);
+                        WritePBOOffsetstoEFI();
+                        return true;
                     }
 
                     else
@@ -464,64 +468,81 @@ namespace CurveMaster
             }
         }
 
-        private static bool YcruncherThrash1T(int TestRounds)
+        private static (bool, double) YcruncherThrash1T(int TestRounds, double LastAvgMHz, bool ReducingValue)
         {
             long StartTime;
+            double AvgMHz = 0;
+            int Iters = 0;
             // Rounds last thirty seconds
             for (int i = 0; i < TestRounds; i++)
             {
-                //StartYcruncher("BKT", $"{State.CurrentTestingCore1T * 2}-{(State.CurrentTestingCore1T * 2) + 1}");
-                StartYcruncher("BKT", "0");
+                StartYcruncher("BKT", $"{State.CurrentTestingCore1T * 2}");
                 StartTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+                // Allow HWiNFO's effective clock readings to average out
+                Thread.Sleep(1000);
                 // God I don't want to interpret STDOUT. If MHz is high, we did not crash!
-                while (DateTimeOffset.Now.ToUnixTimeMilliseconds() - StartTime <= 30000)
+                while (DateTimeOffset.Now.ToUnixTimeMilliseconds() - StartTime <= 55000)
                 {
-                    if (HWiNFOEZ.GetAvgSensorOverPeriod(L3Clocks, 5000) < 4000) 
+                    Iters += 1;
+                    double NewMHzReading = HWiNFOEZ.GetAvgSensorOverPeriod(SensorIndexes[State.CurrentTestingCore1T]["MHz"], 5000);
+                    AvgMHz += NewMHzReading;
+                    if (NewMHzReading < 4000 || (NewMHzReading < LastAvgMHz - 20 && ReducingValue == true)) 
                     {
                         ycruncher.Kill(true);
-                        return true;
+                        AvgMHz /= Iters;
+                        Log($"Previous clock speed: {LastAvgMHz:F2}");
+                        Log($"New clock speed: {AvgMHz:F2}");
+                        return (true, AvgMHz);
                     }
                 }
 
                 ycruncher.Kill(true);
-                Thread.Sleep(30000);
+                Thread.Sleep(5000);
             }
 
-            return false;
+            AvgMHz /= Iters;
+            Log($"Previous clock speed: {LastAvgMHz:F2}");
+            Log($"New clock speed: {AvgMHz:F2}");
+            return (false, AvgMHz);
         }
 
         private static void SingleCoreTesting()
         {
-            // This should run on the first run of this function
-            if (State.CurrentTestingCore1T == -1)
+            while (State.TotalTestingRounds1T < 3)
             {
-                Console.WriteLine("Disabling all cores but core 0 and rebooting...");
-                DisableAllButOneCore(0);
-                State.LastShutdownWasClean = true;
-                State.CurrentTestingCore1T = 0;
-                CleanExit(true);
-            }
-
-            else if (State.LastShutdownWasClean)
-            {
-                // Run single threaded testing, lowering value until crash...
-                State.LastShutdownWasClean = false;
-                Console.WriteLine($"Beginning a single-thread test campaign on {State.CurrentTestingCore1T}...");
-                while (true)
+                State.MoveToNextRound = false;
+                if (State.LastShutdownWasClean)
                 {
-                    if (YcruncherThrash1T(5)) Testing1TRaiseOffset();
-
-                    else
+                    // Run single threaded testing, lowering value until crash...
+                    State.LastShutdownWasClean = false;
+                    Log($"Beginning a single-thread test campaign on core {State.CurrentTestingCore1T}...");
+                    double LastAvgMHz = 0;
+                    bool ThrashResult;
+                    while (!State.MoveToNextRound)
                     {
-                        Console.WriteLine($"Core {State.CurrentTestingCore1T} succeeded a five minute stress test at Curve Optimizer value {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}... Lowering by 1.");
-                        State.CurveOptimizerOffsets[State.CurrentTestingCore1T] -= 1;
-                        RyzenEZ.ApplyPBOOffset(Convert.ToString(State.CurveOptimizerOffsets[State.CurrentTestingCore1T]));
-                        State.SaveState();
+                        (ThrashResult, LastAvgMHz) = YcruncherThrash1T(5, LastAvgMHz, true);
+
+                        if (ThrashResult) 
+                        {
+                            if(Testing1TRaiseOffset())
+                            {
+                                State.CurrentTestingCore1T += 1;
+                                Log($"Beginning a single-thread test campaign on {State.CurrentTestingCore1T}...");
+                            }
+                        }
+
+                        else
+                        {
+                            Log($"Core {State.CurrentTestingCore1T} succeeded a five minute stress test at Curve Optimizer value {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}... Lowering by 1.");
+                            State.CurveOptimizerOffsets[State.CurrentTestingCore1T] -= 1;
+                            RyzenEZ.ApplyPBOOffset($"{State.CurrentTestingCore1T}:{State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}");
+                            State.SaveState();
+                        }
                     }
                 }
-            }
 
-            else Testing1TRaiseOffset();
+                else Testing1TRaiseOffset();
+            }
         }
 
         private static void ZeroCurveShaperValues()
@@ -556,25 +577,25 @@ namespace CurveMaster
 
         private static void SynchronizeVIDs()
         {
-            Console.WriteLine($"Detected {SensorIndexes.Count} physical cores on your system.");
-            Console.WriteLine("Setting PBO offset to 0 on all cores...");
+            Log($"Detected {SensorIndexes.Count} physical cores on your system.");
+            Log("Setting PBO offset to 0 on all cores...");
             RyzenEZ.ZeroPBOOffsets();
 
-            Console.WriteLine("Gathering initial 1T clock speed data...");
+            Log("Gathering initial 1T clock speed data...");
 
             for (int i = 0; i < SensorIndexes.Count; i++)
             {
-                StartYcruncher("BKT", $"{i * 2}-{(i * 2) + 1}");
+                StartYcruncher("BKT", $"{i * 2}");
                 Thread.Sleep(1000);
                 State.StockBKTClockAvg1T.Add(HWiNFOEZ.GetAvgSensorOverPeriod(SensorIndexes[i]["MHz"], 5000));
                 ycruncher.Kill(true);
-                StartYcruncher("BBP", $"{i * 2}-{(i * 2) + 1}");
+                StartYcruncher("BBP", $"{i * 2}");
                 Thread.Sleep(1000);
                 State.StockBBPClockAvg1T.Add(HWiNFOEZ.GetAvgSensorOverPeriod(SensorIndexes[i]["MHz"], 5000));
                 ycruncher.Kill(true);
             }
 
-            Console.WriteLine("Beginning y-cruncher BKT stress test...");
+            Log("Beginning y-cruncher BKT stress test...");
 
             string ycruncherAllCore = $"0-{(SensorIndexes.Count * 2) - 1}";
 
@@ -612,7 +633,7 @@ namespace CurveMaster
                     int HighestIndex = GetHighestVIDIndex(CoreAvgVIDs);
                     State.CurveOptimizerOffsets[HighestIndex] -= 1;
                     State.SaveState();
-                    Console.WriteLine($"Worst VID delta: {CoreAvgVIDs.Max() - CoreAvgVIDs.Min():F3}");
+                    Log($"Worst VID delta: {CoreAvgVIDs.Max() - CoreAvgVIDs.Min():F3}");
                     RyzenEZ.ApplyPBOOffset($"{HighestIndex}:{State.CurveOptimizerOffsets[HighestIndex]}");
                 }
 
@@ -620,9 +641,8 @@ namespace CurveMaster
                 Thread.Sleep(5000);
             }
 
-            Console.WriteLine("VIDs synchronized, gathering initial multithreaded clock speed data...");
+            Log("VIDs synchronized, gathering initial multithreaded clock speed data...");
             RyzenEZ.ZeroPBOOffsets();
-            StartYcruncher("BKT", ycruncherAllCore);
             State.StockBKTClockAvg = HWiNFOEZ.GetAvgSensorOverPeriod(AvgEffectiveClock, 10000);
             State.StockBKTPPTAvg = HWiNFOEZ.GetAvgSensorOverPeriod(PPTIndex, 10000);
             ycruncher.Kill(true);
@@ -633,7 +653,11 @@ namespace CurveMaster
             State.SaveState();
             
             for (int i = 0; i < SensorIndexes.Count; i++) RyzenEZ.ApplyPBOOffset($"{i}:{State.CurveOptimizerOffsets[i]}");
-            
+            WritePBOOffsetstoEFI();
+        }
+
+        private static void WritePBOOffsetstoEFI()
+        {
             SCEWinRead();
             List<string> Lines = File.ReadAllLines("SCEWIN\\nvram.txt").ToList();
 
@@ -649,18 +673,18 @@ namespace CurveMaster
 
         private static void PrintClockImprovement()
         {
-            Console.WriteLine($"Original Scalar 1T average: {State.StockPeak1T:F2}");
-            Console.WriteLine($"Original AVX2|512 1T average: {State.NewPeak1T:F2}");
-            Console.WriteLine($"Original Scalar multicore average: {State.StockBKTClockAvg:F2}");
-            Console.WriteLine($"Original AVX2|512 multicore average: {State.StockBBPClockAvg:F2}");
-            Console.WriteLine($"New Scalar multicore average: {State.NewBKTClockAvg:F2}");
-            Console.WriteLine($"New AVX2|512 multicore average: {State.NewBBPClockAvg:F2}");
-            Console.WriteLine($"Improved average multicore clock speed in Scalar workloads by {State.NewBKTClockAvg / State.StockBKTClockAvg:F2}x above baseline.");
-            Console.WriteLine($"Improved average multicore clock speed in AVX2|512 workloads by {State.NewBBPClockAvg / State.StockBBPClockAvg:F2}x above baseline.");
-            Console.WriteLine($"Original scalar efficiency: {State.StockBKTClockAvg / State.StockBKTPPTAvg:F2} MHz/w");
-            Console.WriteLine($"Original AVX2|512 efficiency: {State.StockBBPClockAvg / State.StockBBPPPTAvg:F2} MHz/w");
-            Console.WriteLine($"New scalar efficiency: {State.NewBKTClockAvg / State.NewBKTPPTAvg:F2} MHz/w");
-            Console.WriteLine($"New AVX2|512 efficiency: {State.NewBBPClockAvg / State.NewBBPPPTAvg:F2} MHz/w");
+            Log($"Original Scalar 1T average: {State.StockPeak1T:F2}");
+            Log($"Original AVX2|512 1T average: {State.NewPeak1T:F2}");
+            Log($"Original Scalar multicore average: {State.StockBKTClockAvg:F2}");
+            Log($"Original AVX2|512 multicore average: {State.StockBBPClockAvg:F2}");
+            Log($"New Scalar multicore average: {State.NewBKTClockAvg:F2}");
+            Log($"New AVX2|512 multicore average: {State.NewBBPClockAvg:F2}");
+            Log($"Improved average multicore clock speed in Scalar workloads by {State.NewBKTClockAvg / State.StockBKTClockAvg:F2}x above baseline.");
+            Log($"Improved average multicore clock speed in AVX2|512 workloads by {State.NewBBPClockAvg / State.StockBBPClockAvg:F2}x above baseline.");
+            Log($"Original scalar efficiency: {State.StockBKTClockAvg / State.StockBKTPPTAvg:F2} MHz/w");
+            Log($"Original AVX2|512 efficiency: {State.StockBBPClockAvg / State.StockBBPPPTAvg:F2} MHz/w");
+            Log($"New scalar efficiency: {State.NewBKTClockAvg / State.NewBKTPPTAvg:F2} MHz/w");
+            Log($"New AVX2|512 efficiency: {State.NewBBPClockAvg / State.NewBBPPPTAvg:F2} MHz/w");
         }
     }
 }
