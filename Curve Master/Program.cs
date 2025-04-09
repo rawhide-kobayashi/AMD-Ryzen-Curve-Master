@@ -162,46 +162,58 @@ namespace CurveMaster
 
         static void Main()
         {
-            Directory.SetCurrentDirectory(Path.GetDirectoryName(Environment.ProcessPath)!);
-            Console.CancelKeyPress += new ConsoleCancelEventHandler(CleanExitEvent);
-
-            if (State.WatchdogCOMPort != "")
+            try
             {
-                Log($"Sending heartbeat on {State.WatchdogCOMPort}...");
-                Watchdog = new SerialHeartbeat(State.WatchdogCOMPort);
-                Watchdog.StartHeartbeat();
-            }
+                Directory.SetCurrentDirectory(Path.GetDirectoryName(Environment.ProcessPath)!);
+                Console.CancelKeyPress += new ConsoleCancelEventHandler(CleanExitEvent);
 
-            while (!FinallyDone)
-            {
-                switch (State.CurrentStep)
+                if (State.WatchdogCOMPort != "")
                 {
-                    case "init":
-                        Log("Step 0: Collect system information, warn user, and verify capabilities...");
-                        Init();
-                        State.CurrentStep = "vid_sync";
-                        State.SaveState();
-                        break;
-
-                    case "vid_sync":
-                        AllowEarlyQuit();
-                        CheckPBOEFIVars();
-                        Log("Step 1: Synchronizing core VIDs under y-cruncher BKT...");
-                        SynchronizeVIDs();
-                        State.CurrentStep = "single_core_test_campaign";
-                        break;
-
-                    case "single_core_test_campaign":
-                        AllowEarlyQuit();
-                        CheckPBOEFIVars();
-                        Log("Step 2: Lowering Curve Optimizer core-by-core and testing 1T stability...");
-                        SingleCoreTesting();
-                        break;
+                    Log($"Sending heartbeat on {State.WatchdogCOMPort}...");
+                    Watchdog = new SerialHeartbeat(State.WatchdogCOMPort);
+                    Watchdog.StartHeartbeat();
                 }
+
+                while (!FinallyDone)
+                {
+                    switch (State.CurrentStep)
+                    {
+                        case "init":
+                            Log("Step 0: Collect system information, warn user, and verify capabilities...");
+                            Init();
+                            State.CurrentStep = "vid_sync";
+                            State.SaveState();
+                            break;
+
+                        case "vid_sync":
+                            AllowEarlyQuit();
+                            CheckPBOEFIVars();
+                            Log("Step 1: Synchronizing core VIDs under y-cruncher BKT...");
+                            SynchronizeVIDs();
+                            State.CurrentStep = "single_core_test_campaign";
+                            break;
+
+                        case "single_core_test_campaign":
+                            AllowEarlyQuit();
+                            CheckPBOEFIVars();
+                            Log("Step 2: Lowering Curve Optimizer core-by-core and testing 1T stability...");
+                            SingleCoreTesting();
+                            break;
+                    }
+                }
+
+                PrintClockImprovement();
+                CleanExit();
             }
-            
-            PrintClockImprovement();
-            CleanExit();
+
+            catch (Exception ex)
+            {
+                Console.WriteLine("Unhandled Exception:");
+                Console.WriteLine(ex);
+                Console.WriteLine("\nPress any key to exit...");
+                Console.ReadKey();
+                CleanExit();
+            }
         }
 
         static void Log(string message)
@@ -427,53 +439,20 @@ namespace CurveMaster
             return (int)(Minutes * 60 * 1000);
         }
 
-        private static bool Testing1TRaiseOffset()
-        {
-            double LastAvgMHz = 0;
-            bool ThrashResult;
-            while (true)
-            {
-                Log($"Core {State.CurrentTestingCore1T} failed at Curve Optimizer value {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}...");
-                State.CurveOptimizerOffsets[State.CurrentTestingCore1T] += 1;
-                RyzenEZ.ApplyPBOOffset(Convert.ToString(State.CurveOptimizerOffsets[State.CurrentTestingCore1T]));
-                State.SaveState();
-                Log($"Beginning a one hour stress test on core {State.CurrentTestingCore1T} at a raised Curve Optimizer value of {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}...");
-                (ThrashResult, LastAvgMHz) = YcruncherThrash1T(60, LastAvgMHz, false);
-                if (ThrashResult)
-                {
-                    State.CurveOptimizerOffsets[State.CurrentTestingCore1T] += 1;
-                    RyzenEZ.ApplyPBOOffset(Convert.ToString(State.CurveOptimizerOffsets[State.CurrentTestingCore1T]));
-                    State.SaveState();
-                }
-
-                else
-                {
-                    if (State.CurrentTestingCore1T < State.CurveOptimizerOffsets.Count)
-                    {
-                        Log($"Testing concluded on core {State.CurrentTestingCore1T}, final Curve Optimizer value {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}");
-                        State.MoveToNextRound = true;
-                        State.LastShutdownWasClean = true;
-                        WritePBOOffsetstoEFI();
-                        return true;
-                    }
-
-                    else
-                    {
-                        // Running this without a parameter actually enables all cores!
-                        RyzenEZ.ApplyDisableCores();
-                        // Continue to the next step...
-                        CleanExit();
-                    }
-                }
-            }
-        }
-
         private static (bool, double) YcruncherThrash1T(int TestRounds, double LastAvgMHz, bool ReducingValue)
         {
             long StartTime;
             double AvgMHz = 0;
             int Iters = 0;
+            RyzenEZ.ApplyPBOOffset($"{State.CurrentTestingCore1T}:{State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}");
             // Rounds last thirty seconds
+            List<uint> MonitorSensorIndexes = [];
+            List<double> NewSensorReadings = [];
+            int HighestIndex = 0;
+
+            for (int i = 0; i < SensorIndexes.Count; i++) MonitorSensorIndexes.Add(SensorIndexes[i]["VID"]);
+            MonitorSensorIndexes.Add(SensorIndexes[State.CurrentTestingCore1T]["MHz"]);
+
             for (int i = 0; i < TestRounds; i++)
             {
                 StartYcruncher("BKT", $"{State.CurrentTestingCore1T * 2}");
@@ -484,12 +463,37 @@ namespace CurveMaster
                 while (DateTimeOffset.Now.ToUnixTimeMilliseconds() - StartTime <= 55000)
                 {
                     Iters += 1;
-                    double NewMHzReading = HWiNFOEZ.GetAvgSensorOverPeriod(SensorIndexes[State.CurrentTestingCore1T]["MHz"], 5000);
+                    //double NewMHzReading = HWiNFOEZ.GetAvgSensorOverPeriod(SensorIndexes[State.CurrentTestingCore1T]["MHz"], 5000);
+                    NewSensorReadings = HWiNFOEZ.GetAvgSensorOverPeriod(MonitorSensorIndexes, 5000);
+                    double NewMHzReading = NewSensorReadings[^1];
                     AvgMHz += NewMHzReading;
-                    if (NewMHzReading < 4000 || (NewMHzReading < LastAvgMHz - 20 && ReducingValue == true)) 
+                    // Now just VIDs
+                    NewSensorReadings.RemoveAt(NewSensorReadings.Count - 1);
+                    HighestIndex = GetHighestVIDIndex(NewSensorReadings);
+                    bool Failed = false;
+
+                    if (NewMHzReading < 4000)
+                    {
+                        Failed = true;
+                        Log("Failure reason: y-cruncher crashed.");
+                    }
+                    if (AvgMHz / Iters < LastAvgMHz && ReducingValue == true)
+                    {
+                        Failed = true;
+                        Log("Failure reason: Failed to gain any clock speed.");
+                    }
+                    if (NewSensorReadings[HighestIndex] > NewSensorReadings[State.CurrentTestingCore1T])
+                    {
+                        Failed = true;
+                        Log("Failure reason: Tested core did not maintain the highest average VID request, rendering the test ineffective.");
+                    }
+
+                    if (Failed)
                     {
                         ycruncher.Kill(true);
                         AvgMHz /= Iters;
+                        Log($"Highest core VID: Core {HighestIndex} at {NewSensorReadings[HighestIndex]}");
+                        Log($"Core {State.CurrentTestingCore1T} VID: {NewSensorReadings[State.CurrentTestingCore1T]}");
                         Log($"Previous clock speed: {LastAvgMHz:F2}");
                         Log($"New clock speed: {AvgMHz:F2}");
                         return (true, AvgMHz);
@@ -501,6 +505,8 @@ namespace CurveMaster
             }
 
             AvgMHz /= Iters;
+            Log($"Highest core VID: Core {HighestIndex} at {NewSensorReadings[HighestIndex]}");
+            Log($"Core {State.CurrentTestingCore1T} VID: {NewSensorReadings[State.CurrentTestingCore1T]}");
             Log($"Previous clock speed: {LastAvgMHz:F2}");
             Log($"New clock speed: {AvgMHz:F2}");
             return (false, AvgMHz);
@@ -510,39 +516,73 @@ namespace CurveMaster
         {
             while (State.TotalTestingRounds1T < 3)
             {
+                double LastAvgMHz = 0;
+                bool ThrashResult;
                 State.MoveToNextRound = false;
-                if (State.LastShutdownWasClean)
-                {
+                if (State.LastShutdownWasClean && State.LoweringValue)
+                {   
                     // Run single threaded testing, lowering value until crash...
                     State.LastShutdownWasClean = false;
+                    State.LoweringValue = true;
                     Log($"Beginning a single-thread test campaign on core {State.CurrentTestingCore1T}...");
-                    double LastAvgMHz = 0;
-                    bool ThrashResult;
-                    while (!State.MoveToNextRound)
+                    while (State.LoweringValue)
                     {
                         (ThrashResult, LastAvgMHz) = YcruncherThrash1T(5, LastAvgMHz, true);
 
-                        if (ThrashResult) 
+                        if (ThrashResult)
                         {
-                            if(Testing1TRaiseOffset())
-                            {
-                                State.CurrentTestingCore1T += 1;
-                                Log($"Beginning a single-thread test campaign on {State.CurrentTestingCore1T}...");
-                            }
+                            State.LoweringValue = false;
+                            State.LastShutdownWasClean = true;
                         }
 
                         else
                         {
                             Log($"Core {State.CurrentTestingCore1T} succeeded a five minute stress test at Curve Optimizer value {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}... Lowering by 1.");
                             State.CurveOptimizerOffsets[State.CurrentTestingCore1T] -= 1;
-                            RyzenEZ.ApplyPBOOffset($"{State.CurrentTestingCore1T}:{State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}");
                             State.SaveState();
                         }
                     }
                 }
 
-                else Testing1TRaiseOffset();
+                else
+                {   
+                    if (!State.LastShutdownWasClean) Log("Recovered from a hard crash!");
+                    State.LastShutdownWasClean = false;
+                    while (true)
+                    {
+                        Log($"Core {State.CurrentTestingCore1T} failed at Curve Optimizer value {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}...");
+                        State.CurveOptimizerOffsets[State.CurrentTestingCore1T] += 1;
+                        State.SaveState();
+                        Log($"Beginning a one hour stress test on core {State.CurrentTestingCore1T} at a raised Curve Optimizer value of {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}...");
+                        (ThrashResult, LastAvgMHz) = YcruncherThrash1T(60, LastAvgMHz, false);
+                        if (ThrashResult)
+                        {
+                            State.CurveOptimizerOffsets[State.CurrentTestingCore1T] += 1;
+                            State.SaveState();
+                        }
+
+                        else
+                        {
+                            State.CurrentTestingCore1T += 1;
+                            State.LastShutdownWasClean = true;
+                            if (State.CurrentTestingCore1T < State.CurveOptimizerOffsets.Count)
+                            {
+                                Log($"Testing concluded on core {State.CurrentTestingCore1T}, final Curve Optimizer value {State.CurveOptimizerOffsets[State.CurrentTestingCore1T]}");
+                                WritePBOOffsetstoEFI();
+                            }
+
+                            else
+                            {
+                                State.MoveToNextRound = true;
+                                State.CurrentTestingCore1T = 0;
+                            }
+                        }
+                    }
+                }
             }
+
+            // Continue to the next step...
+            CleanExit();
         }
 
         private static void ZeroCurveShaperValues()

@@ -297,7 +297,7 @@ namespace CurveMaster.include.HWiNFO
             long StartTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
             List<double> SensorReadings = [];
 
-            while (DateTimeOffset.Now.ToUnixTimeMilliseconds() - StartTime <= 5000)
+            while (DateTimeOffset.Now.ToUnixTimeMilliseconds() - StartTime <= PeriodMS)
             {
                 SensorReadings.Add(GetSensorReading(SensorIndex));
                 Thread.Sleep(200);
@@ -305,12 +305,35 @@ namespace CurveMaster.include.HWiNFO
 
             double SumSensorReadings = 0;
 
-            for (int i = 0; i < SensorReadings.Count; i++)
-            {
-                SumSensorReadings += SensorReadings[i];
-            }
+            for (int i = 0; i < SensorReadings.Count; i++) SumSensorReadings += SensorReadings[i];
 
             return SumSensorReadings / SensorReadings.Count;
+        }
+
+        public static List<double> GetAvgSensorOverPeriod(List<uint> SensorIndexes, uint PeriodMS)
+        {
+            long StartTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            List<List<double>> SensorReadings = [];
+
+            for (int i = 0; i < SensorIndexes.Count; i++) SensorReadings.Add([]);
+
+            while (DateTimeOffset.Now.ToUnixTimeMilliseconds() - StartTime <= PeriodMS)
+            {
+                for (int i = 0; i < SensorIndexes.Count; i++) SensorReadings[i].Add(GetSensorReading(SensorIndexes[i]));
+                Thread.Sleep(200);
+            }
+
+            List<double> SumSensorReadings = Enumerable.Repeat<double>(0, SensorIndexes.Count).ToList();
+            List<double> AvgSensorReadings = Enumerable.Repeat<double>(0, SensorIndexes.Count).ToList();
+
+            for (int i = 0; i < SensorIndexes.Count; i++)
+            {
+                for (int x = 0; x < SensorReadings[i].Count; x++) SumSensorReadings[i] += SensorReadings[i][x];
+
+                AvgSensorReadings[i] = SumSensorReadings[i] / SensorReadings[i].Count;
+            }
+
+            return AvgSensorReadings;
         }
 
         public static void Dispose()
